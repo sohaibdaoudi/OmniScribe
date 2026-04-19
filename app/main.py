@@ -6,6 +6,7 @@ from PyQt6.QtWidgets import QApplication
 
 from app.config import settings
 from app.database import Database
+from app.services.api_status_service import ApiStatusService
 from app.services.document_service import DocumentService
 from app.services.groq_client import GroqClient
 from app.services.notes_service import NotesService
@@ -37,6 +38,7 @@ def build_main_window() -> MainWindow:
     )
     notes_service = NotesService(database=database, groq_client=groq_client)
     rag_service = RagService(database=database, groq_client=groq_client)
+    api_status_service = ApiStatusService(groq_client=groq_client)
 
     return MainWindow(
         database=database,
@@ -44,6 +46,7 @@ def build_main_window() -> MainWindow:
         document_service=document_service,
         notes_service=notes_service,
         rag_service=rag_service,
+        api_status_service=api_status_service,
     )
 
 

@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Any, Callable
 
-from PyQt6.QtCore import Qt, QThread, QTimer, QSize, QPointF
+from PyQt6.QtCore import Qt, QThread, QTimer, QSize, QPointF, pyqtSignal
 from PyQt6.QtGui import QCloseEvent, QColor, QPalette, QFont, QIcon, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -14,7 +15,6 @@ from PyQt6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
-    QListWidget,
     QMainWindow,
     QMessageBox,
     QPlainTextEdit,
@@ -33,6 +33,7 @@ from PyQt6.QtWidgets import (
 )
 
 from app.database import Database
+from app.services.api_status_service import ApiHealthStatus, ApiStatusService
 from app.services.document_service import DocumentService
 from app.services.notes_service import NOTE_MODE_EXACT, NOTE_MODE_REFORMULATED, NotesService
 from app.services.rag_service import RagService
@@ -65,6 +66,7 @@ AMBER      = "#f5a623"   # warmer amber, more distinct
 AMBER_S    = "rgba(245,166,35,0.12)"
 
 RED        = "#fc6b6b"   # slightly brighter red
+RED_S      = "rgba(252,107,107,0.13)"
 
 
 def css_border(color: str = BORDER) -> str:
@@ -169,6 +171,63 @@ class SectionLabel(QLabel):
             f"color: {TEXT3}; font-family: 'Courier New', monospace; "
             f"font-size: 10px; letter-spacing: 1px;"
         )
+
+
+class AttachmentChip(QFrame):
+    """Compact removable attachment indicator used by upload flows."""
+
+    remove_requested = pyqtSignal(str)
+
+    def __init__(self, file_path: str, kind: str, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.file_path = file_path
+        self.kind = kind
+
+        self.setStyleSheet(
+            f"background: {BG2}; border: 1px solid {BORDER2}; border-radius: 10px;"
+        )
+
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(8, 5, 6, 5)
+        lay.setSpacing(8)
+
+        icon = QLabel(self._icon_text())
+        icon.setFixedSize(22, 18)
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setStyleSheet(
+            f"background: {BG3}; color: {ACCENT2}; border-radius: 6px; "
+            f"font-size: 9px; font-family: 'Courier New', monospace;"
+        )
+
+        name = QLabel(Path(file_path).name)
+        name.setStyleSheet(f"color: {TEXT2}; font-size: 12px; background: transparent;")
+        name.setToolTip(file_path)
+
+        remove_btn = QPushButton("✕")
+        remove_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        remove_btn.setFixedSize(18, 18)
+        remove_btn.setStyleSheet(
+            f"QPushButton {{ background: transparent; color: {TEXT3}; border: none; font-size: 11px; }}"
+            f"QPushButton:hover {{ color: {RED}; }}"
+        )
+        remove_btn.clicked.connect(lambda: self.remove_requested.emit(self.file_path))
+
+        lay.addWidget(icon)
+        lay.addWidget(name, 1)
+        lay.addWidget(remove_btn)
+
+    def _icon_text(self) -> str:
+        if self.kind == "audio":
+            return "AUD"
+
+        ext = Path(self.file_path).suffix.lower()
+        if ext == ".pdf":
+            return "PDF"
+        if ext in {".doc", ".docx"}:
+            return "DOC"
+        if ext in {".txt", ".md"}:
+            return "TXT"
+        return "FILE"
 
 
 class Card(QFrame):
@@ -471,6 +530,7 @@ class MainWindow(QMainWindow):
         document_service: DocumentService,
         notes_service: NotesService,
         rag_service: RagService,
+        api_status_service: ApiStatusService,
     ) -> None:
         super().__init__()
         self.database = database
@@ -478,11 +538,15 @@ class MainWindow(QMainWindow):
         self.document_service = document_service
         self.notes_service = notes_service
         self.rag_service = rag_service
+        self.api_status_service = api_status_service
 
         self._active_workers: list[tuple[QThread, FunctionWorker]] = []
+
+        # UX decision: one audio per transcription job (clear mapping), multiple docs as attachments.
         self._selected_audio_path: str | None = None
         self._selected_audio_documents: list[str] = []
         self._selected_document_paths: list[str] = []
+
         self._documents_cache: dict[int, dict[str, Any]] = {}
         self._documents_row_cache: dict[int, dict[str, Any]] = {}
         self._nav_items: list[NavItem] = []
@@ -491,6 +555,11 @@ class MainWindow(QMainWindow):
         self._audio_progress_timer = QTimer(self)
         self._audio_progress_timer.setInterval(140)
         self._audio_progress_timer.timeout.connect(self._advance_audio_progress)
+
+        self._api_status_check_inflight = False
+        self._api_status_timer = QTimer(self)
+        self._api_status_timer.setInterval(20000)
+        self._api_status_timer.timeout.connect(self._check_api_health)
 
         self.setWindowTitle("OmniScribe")
         self.resize(1280, 820)
@@ -520,6 +589,8 @@ class MainWindow(QMainWindow):
         """)
 
         self._build_ui()
+        self._refresh_attachment_views()
+        self._setup_api_status_checks()
         self._refresh_all()
 
     # ── Layout ──────────────────────────────────────────────────────────────
@@ -618,16 +689,17 @@ class MainWindow(QMainWindow):
         f_lay.setContentsMargins(10, 12, 10, 12)
 
         status_pill = QWidget()
-        status_pill.setStyleSheet(
-            f"background: {GREEN_S}; border-radius: 10px;"
-        )
+        self.api_status_pill = status_pill
+        status_pill.setStyleSheet(f"background: {AMBER_S}; border-radius: 10px;")
         sp_lay = QHBoxLayout(status_pill)
         sp_lay.setContentsMargins(10, 8, 10, 8)
         sp_lay.setSpacing(8)
 
         dot = QLabel("●")
-        dot.setStyleSheet(f"color: {GREEN}; font-size: 10px; background: transparent; border: none;")
-        status_text = MonoLabel("whisper-large ready", GREEN)
+        self.api_status_dot = dot
+        dot.setStyleSheet(f"color: {AMBER}; font-size: 10px; background: transparent; border: none;")
+        status_text = MonoLabel("Connecting...", AMBER)
+        self.api_status_text = status_text
         sp_lay.addWidget(dot)
         sp_lay.addWidget(status_text, 1)
         f_lay.addWidget(status_pill)
@@ -642,6 +714,54 @@ class MainWindow(QMainWindow):
             nav.set_active(nav is item)
             if nav is item:
                 self.stack.setCurrentIndex(i)
+
+    def _setup_api_status_checks(self) -> None:
+        self._apply_api_status(ApiHealthStatus(state="loading", message="Connecting..."))
+        self._check_api_health()
+        self._api_status_timer.start()
+
+    def _check_api_health(self) -> None:
+        if self._api_status_check_inflight:
+            return
+
+        self._api_status_check_inflight = True
+        self._apply_api_status(ApiHealthStatus(state="loading", message="Connecting..."))
+
+        def task() -> ApiHealthStatus:
+            return self.api_status_service.check_health()
+
+        def on_success(status: ApiHealthStatus) -> None:
+            self._api_status_check_inflight = False
+            self._apply_api_status(status)
+
+        def on_error(message: str) -> None:
+            self._api_status_check_inflight = False
+            self._apply_api_status(ApiHealthStatus(state="error", message=f"API unavailable: {message}"))
+
+        self._run_async(task, on_success, on_error)
+
+    def _apply_api_status(self, status: ApiHealthStatus) -> None:
+        if status.state == "ready":
+            pill_bg = GREEN_S
+            dot_color = GREEN
+            text_color = GREEN
+        elif status.state == "loading":
+            pill_bg = AMBER_S
+            dot_color = AMBER
+            text_color = AMBER
+        else:
+            pill_bg = RED_S
+            dot_color = RED
+            text_color = RED
+
+        self.api_status_pill.setStyleSheet(f"background: {pill_bg}; border-radius: 10px;")
+        self.api_status_dot.setStyleSheet(
+            f"color: {dot_color}; font-size: 10px; background: transparent; border: none;"
+        )
+        self.api_status_text.setText(status.message)
+        self.api_status_text.setStyleSheet(
+            f"color: {text_color}; font-family: 'Courier New', monospace; font-size: 11px;"
+        )
 
     # ── Topbar helper ────────────────────────────────────────────────────────
 
@@ -757,8 +877,12 @@ class MainWindow(QMainWindow):
         self.audio_drop_zone.mousePressEvent = lambda e: self._select_audio_file()
         lay.addWidget(self.audio_drop_zone)
 
-        self.audio_file_label = MonoLabel("No file selected", TEXT3)
-        lay.addWidget(self.audio_file_label)
+        self.audio_attachments_box = QWidget()
+        self.audio_attachments_box.setStyleSheet("background: transparent; border: none;")
+        self.audio_attachments_layout = QVBoxLayout(self.audio_attachments_box)
+        self.audio_attachments_layout.setContentsMargins(0, 0, 0, 0)
+        self.audio_attachments_layout.setSpacing(6)
+        lay.addWidget(self.audio_attachments_box)
 
         # Title field
         title_section = QWidget()
@@ -805,12 +929,12 @@ class MainWindow(QMainWindow):
 
         ds_lay.addWidget(docs_drop)
 
-        self.audio_docs_list = QListWidget()
-        self.audio_docs_list.setMaximumHeight(70)
-        self.audio_docs_list.setStyleSheet(
-            f"background: transparent; border: none; color: {TEXT3}; font-size: 12px;"
-        )
-        ds_lay.addWidget(self.audio_docs_list)
+        self.audio_docs_attachments_box = QWidget()
+        self.audio_docs_attachments_box.setStyleSheet("background: transparent; border: none;")
+        self.audio_docs_attachments_layout = QVBoxLayout(self.audio_docs_attachments_box)
+        self.audio_docs_attachments_layout.setContentsMargins(0, 0, 0, 0)
+        self.audio_docs_attachments_layout.setSpacing(6)
+        ds_lay.addWidget(self.audio_docs_attachments_box)
         lay.addWidget(docs_section)
 
         # Progress bar (hidden by default)
@@ -925,13 +1049,12 @@ class MainWindow(QMainWindow):
         c_lay.setContentsMargins(24, 18, 24, 18)
         c_lay.setSpacing(14)
 
-        self.selected_documents_list = QListWidget()
-        self.selected_documents_list.setMaximumHeight(60)
-        self.selected_documents_list.setStyleSheet(
-            f"background: transparent; border: 1px solid {BORDER}; "
-            f"border-radius: 10px; color: {TEXT3}; font-size: 12px; padding: 4px;"
-        )
-        c_lay.addWidget(self.selected_documents_list)
+        self.documents_upload_attachments_box = QWidget()
+        self.documents_upload_attachments_box.setStyleSheet("background: transparent; border: none;")
+        self.documents_upload_attachments_layout = QVBoxLayout(self.documents_upload_attachments_box)
+        self.documents_upload_attachments_layout.setContentsMargins(0, 0, 0, 0)
+        self.documents_upload_attachments_layout.setSpacing(6)
+        c_lay.addWidget(self.documents_upload_attachments_box)
 
         # Table panel
         table_panel = PanelFrame("stored documents")
@@ -1205,12 +1328,23 @@ class MainWindow(QMainWindow):
         )
         if not path:
             return
+
+        if self._selected_audio_path and self._selected_audio_path != path:
+            choice = QMessageBox.question(
+                self,
+                "Replace audio attachment?",
+                "A different audio file is already attached. Replace it?",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if choice != QMessageBox.StandardButton.Yes:
+                return
+
         self._selected_audio_path = path
-        short = path.split("/")[-1]
-        self.audio_file_label.setText(f"Selected: {short}")
         self.audio_drop_zone.setStyleSheet(
             f"QFrame {{ background: {ACCENT_S}; border: 1.5px dashed {ACCENT}; border-radius: 14px; }}"
         )
+        self._refresh_attachment_views()
 
     def _select_audio_documents(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
@@ -1219,8 +1353,9 @@ class MainWindow(QMainWindow):
         )
         if not paths:
             return
-        self._selected_audio_documents = paths
-        self._set_list_items(self.audio_docs_list, [p.split("/")[-1] for p in paths])
+
+        self._selected_audio_documents = self._merge_unique_paths(self._selected_audio_documents, list(paths))
+        self._refresh_attachment_views()
 
     def _select_documents_for_upload(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
@@ -1229,8 +1364,9 @@ class MainWindow(QMainWindow):
         )
         if not paths:
             return
-        self._selected_document_paths = paths
-        self._set_list_items(self.selected_documents_list, [p.split("/")[-1] for p in paths])
+
+        self._selected_document_paths = self._merge_unique_paths(self._selected_document_paths, list(paths))
+        self._refresh_attachment_views()
 
     # ── Actions ───────────────────────────────────────────────────────────────
 
@@ -1259,9 +1395,8 @@ class MainWindow(QMainWindow):
             self._finish_audio_progress(success=True)
             self._selected_audio_path = None
             self._selected_audio_documents = []
-            self.audio_file_label.setText("No file selected")
             self.audio_title_input.clear()
-            self._set_list_items(self.audio_docs_list, [])
+            self._refresh_attachment_views()
             self._refresh_all()
             self.statusBar().showMessage("Audio processed.")
             QMessageBox.information(
@@ -1297,10 +1432,10 @@ class MainWindow(QMainWindow):
             status = "Refining transcript…"
         elif value < 95:
             step = 1
-            status = "Finalizing and linking docs…"
+            status = "Finalizing…"
         else:
             step = 0
-            status = "Finalizing and linking docs…"
+            status = "Finalizing…"
 
         self._audio_progress_value = min(95, value + step)
         self.progress_bar.setValue(self._audio_progress_value)
@@ -1321,6 +1456,76 @@ class MainWindow(QMainWindow):
             self.progress_label.setText("Failed")
             QTimer.singleShot(320, self.progress_widget.hide)
 
+    def _merge_unique_paths(self, existing: list[str], incoming: list[str]) -> list[str]:
+        merged = list(existing)
+        seen = {Path(p).resolve() for p in existing}
+        for candidate in incoming:
+            resolved = Path(candidate).resolve()
+            if resolved in seen:
+                continue
+            merged.append(str(resolved))
+            seen.add(resolved)
+        return merged
+
+    def _refresh_attachment_views(self) -> None:
+        self._render_attachments(
+            layout=self.audio_attachments_layout,
+            files=[self._selected_audio_path] if self._selected_audio_path else [],
+            kind="audio",
+            empty_text="No audio attached",
+            remove_callback=self._remove_audio_attachment,
+        )
+        self._render_attachments(
+            layout=self.audio_docs_attachments_layout,
+            files=self._selected_audio_documents,
+            kind="document",
+            empty_text="No supporting documents attached",
+            remove_callback=self._remove_audio_document_attachment,
+        )
+        self._render_attachments(
+            layout=self.documents_upload_attachments_layout,
+            files=self._selected_document_paths,
+            kind="document",
+            empty_text="No documents selected",
+            remove_callback=self._remove_documents_upload_attachment,
+        )
+
+    def _render_attachments(
+        self,
+        *,
+        layout: QVBoxLayout,
+        files: list[str],
+        kind: str,
+        empty_text: str,
+        remove_callback: Callable[[str], None],
+    ) -> None:
+        while layout.count():
+            item = layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        if not files:
+            layout.addWidget(MonoLabel(empty_text, TEXT3))
+            return
+
+        for file_path in files:
+            chip = AttachmentChip(file_path=file_path, kind=kind)
+            chip.remove_requested.connect(remove_callback)
+            layout.addWidget(chip)
+
+    def _remove_audio_attachment(self, file_path: str) -> None:
+        if self._selected_audio_path == file_path:
+            self._selected_audio_path = None
+            self._refresh_attachment_views()
+
+    def _remove_audio_document_attachment(self, file_path: str) -> None:
+        self._selected_audio_documents = [p for p in self._selected_audio_documents if p != file_path]
+        self._refresh_attachment_views()
+
+    def _remove_documents_upload_attachment(self, file_path: str) -> None:
+        self._selected_document_paths = [p for p in self._selected_document_paths if p != file_path]
+        self._refresh_attachment_views()
+
     def _upload_selected_documents(self) -> None:
         if not self._selected_document_paths:
             QMessageBox.warning(self, "Missing documents", "Select one or more documents first.")
@@ -1339,7 +1544,7 @@ class MainWindow(QMainWindow):
         def on_success(count: int) -> None:
             self.upload_documents_button.setEnabled(True)
             self._selected_document_paths = []
-            self._set_list_items(self.selected_documents_list, [])
+            self._refresh_attachment_views()
             self._refresh_all()
             self.statusBar().showMessage("Documents uploaded.")
             QMessageBox.information(self, "Done", f"Stored {count} document(s).")
@@ -1678,16 +1883,15 @@ class MainWindow(QMainWindow):
         except (TypeError, ValueError):
             return None
 
-    def _set_list_items(self, lw: QListWidget, values: list[str]) -> None:
-        lw.clear()
-        for v in values:
-            lw.addItem(v)
-
     def _show_error(self, message: str) -> None:
         self.statusBar().showMessage("Operation failed.")
         QMessageBox.critical(self, "Error", message)
 
     def closeEvent(self, event: QCloseEvent) -> None:
+        if self._api_status_timer.isActive():
+            self._api_status_timer.stop()
+        if self._audio_progress_timer.isActive():
+            self._audio_progress_timer.stop()
         for thread, _ in list(self._active_workers):
             thread.quit()
             thread.wait(2000)

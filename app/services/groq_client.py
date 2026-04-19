@@ -19,6 +19,26 @@ class GroqClient:
             raise RuntimeError("GROQ_API_KEY is not configured. Set it in .env before using AI features.")
         return {"Authorization": f"Bearer {self.api_key}"}
 
+    def health_check(self, timeout_seconds: int = 10) -> dict[str, Any]:
+        """Perform a lightweight API reachability/auth check.
+
+        Groq's OpenAI-compatible API does not expose a dedicated /health endpoint,
+        so we use /models as an availability probe.
+        """
+        url = f"{self.BASE_URL}/models"
+        headers = {
+            **self._authorization_header(),
+            "Content-Type": "application/json",
+        }
+        response = requests.get(url, headers=headers, timeout=timeout_seconds)
+        if response.status_code >= 400:
+            raise RuntimeError(f"Groq health check failed: {response.status_code} {response.text}")
+
+        payload = response.json()
+        if not isinstance(payload, dict):
+            raise RuntimeError("Groq health check returned an invalid payload.")
+        return payload
+
     def transcribe_audio(self, audio_file_path: str | Path) -> str:
         file_path = Path(audio_file_path)
         if not file_path.exists():

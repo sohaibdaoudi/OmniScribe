@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+from html import escape
 from typing import Any, Callable
 
-from PyQt6.QtCore import Qt, QThread, QTimer, QSize
-from PyQt6.QtGui import QCloseEvent, QColor, QPalette, QFont, QIcon
+from PyQt6.QtCore import Qt, QThread, QTimer, QSize, QPointF
+from PyQt6.QtGui import QCloseEvent, QColor, QPalette, QFont, QIcon, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -231,6 +232,43 @@ class PanelFrame(QFrame):
         return self._body_layout
 
 
+class UploadIcon(QWidget):
+    """Outlined upload glyph inside a rounded icon container."""
+
+    def __init__(self, compact: bool = False, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        size = 36 if compact else 44
+        self.setFixedSize(size, size)
+        self.setStyleSheet(
+            f"background: {BG2}; border: 1px solid {BORDER2}; border-radius: 12px;"
+        )
+
+    def paintEvent(self, event: Any) -> None:
+        super().paintEvent(event)
+
+        p = QPainter(self)
+        p.setRenderHint(QPainter.RenderHint.Antialiasing, True)
+
+        pen = QPen(QColor(ACCENT2))
+        pen.setWidth(2)
+        pen.setCapStyle(Qt.PenCapStyle.RoundCap)
+        pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+        p.setPen(pen)
+
+        w = float(self.width())
+        h = float(self.height())
+
+        # Arrow shaft + head
+        p.drawLine(QPointF(w * 0.50, h * 0.26), QPointF(w * 0.50, h * 0.62))
+        p.drawLine(QPointF(w * 0.50, h * 0.26), QPointF(w * 0.36, h * 0.40))
+        p.drawLine(QPointF(w * 0.50, h * 0.26), QPointF(w * 0.64, h * 0.40))
+
+        # Tray line
+        p.drawLine(QPointF(w * 0.30, h * 0.74), QPointF(w * 0.70, h * 0.74))
+        p.drawLine(QPointF(w * 0.30, h * 0.74), QPointF(w * 0.30, h * 0.62))
+        p.drawLine(QPointF(w * 0.70, h * 0.74), QPointF(w * 0.70, h * 0.62))
+
+
 class UploadDropZone(QFrame):
     def __init__(self, title: str, subtitle: str, formats: list[str] | None = None, compact: bool = False, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -251,6 +289,7 @@ class UploadDropZone(QFrame):
         """
         self.setStyleSheet(self._normal_style)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._compact_row: QHBoxLayout | None = None
 
         lay = QVBoxLayout(self)
         if compact:
@@ -258,6 +297,8 @@ class UploadDropZone(QFrame):
             lay.setSpacing(6)
 
             row = QHBoxLayout()
+            row.setSpacing(10)
+            self._compact_row = row
             icon_box = self._make_icon_box(compact=True)
             row.addWidget(icon_box)
 
@@ -277,7 +318,6 @@ class UploadDropZone(QFrame):
             lay.setAlignment(Qt.AlignmentFlag.AlignCenter)
 
             icon_box = self._make_icon_box()
-            icon_box.setFixedSize(52, 52)
             lay.addWidget(icon_box, alignment=Qt.AlignmentFlag.AlignHCenter)
             lay.addSpacing(14)
 
@@ -309,17 +349,13 @@ class UploadDropZone(QFrame):
                 fmt_widget.setLayout(fmt_row)
                 lay.addWidget(fmt_widget)
 
-    def _make_icon_box(self, compact: bool = False) -> QLabel:
-        size = 36 if compact else 48
-        icon = QLabel("↑")
-        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setFixedSize(size, size)
-        icon.setStyleSheet(
-            f"color: {ACCENT2}; background: {BG2}; "
-            f"border: 1px solid {BORDER2}; border-radius: 12px; "
-            f"font-size: {'16px' if compact else '20px'}; font-weight: bold;"
-        )
-        return icon
+    def _make_icon_box(self, compact: bool = False) -> QWidget:
+        return UploadIcon(compact=compact)
+
+    def set_compact_action_widget(self, widget: QWidget) -> None:
+        if self._compact_row is None:
+            return
+        self._compact_row.addWidget(widget)
 
     def enterEvent(self, event: Any) -> None:
         self.setStyleSheet(self._hover_style)
@@ -731,15 +767,24 @@ class MainWindow(QMainWindow):
             "Will be linked to this audio session",
             compact=True,
         )
+        docs_drop.mousePressEvent = lambda e: self._select_audio_documents()
 
         browse_btn = StyledButton("Browse")
+        browse_btn.setFixedHeight(32)
+        browse_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: transparent;
+                color: {TEXT2};
+                border: 1px solid {BORDER2};
+                border-radius: 10px;
+                padding: 6px 14px;
+                font-size: 12px;
+            }}
+            QPushButton:hover {{ background: {BG2}; color: {TEXT}; }}
+            QPushButton:disabled {{ color: {TEXT3}; }}
+        """)
         browse_btn.clicked.connect(self._select_audio_documents)
-        browse_btn.setParent(docs_drop)
-
-        # rebuild compact layout to include browse button
-        docs_drop_lay = docs_drop.layout()
-        if isinstance(docs_drop_lay, QHBoxLayout):
-            docs_drop_lay.addWidget(browse_btn)
+        docs_drop.set_compact_action_widget(browse_btn)
 
         ds_lay.addWidget(docs_drop)
 
@@ -985,12 +1030,14 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.chat_scroll, 1)
 
         # Sources bar
-        self.chat_sources_label = MonoLabel("", TEXT3)
+        self.chat_sources_label = QLabel("")
         self.chat_sources_label.setWordWrap(True)
+        self.chat_sources_label.setStyleSheet("background: transparent; border: none;")
         sources_wrap = QWidget()
         sources_wrap.setStyleSheet(f"background: {BG1}; border-top: 1px solid {BORDER};")
         sw_lay = QHBoxLayout(sources_wrap)
         sw_lay.setContentsMargins(24, 8, 24, 8)
+        sw_lay.setSpacing(8)
         sw_lay.addWidget(MonoLabel("sources:", TEXT3))
         sw_lay.addWidget(self.chat_sources_label, 1)
         lay.addWidget(sources_wrap)
@@ -1239,8 +1286,14 @@ class MainWindow(QMainWindow):
         def on_success(result: dict[str, object]) -> None:
             self.send_chat_button.setEnabled(True)
             self._add_chat_bubble(str(result.get("answer", "")), is_user=False)
-            sources = result.get("sources", [])
-            self.chat_sources_label.setText("  ·  ".join(str(s) for s in sources))
+            raw_sources = result.get("sources", [])
+            if isinstance(raw_sources, (list, tuple)):
+                sources = [str(s) for s in raw_sources]
+            elif raw_sources:
+                sources = [str(raw_sources)]
+            else:
+                sources = []
+            self._set_chat_sources(sources)
             self.statusBar().showMessage("Ready.")
 
         def on_error(msg: str) -> None:
@@ -1262,7 +1315,20 @@ class MainWindow(QMainWindow):
                     if s.widget():
                         s.widget().deleteLater()
                 sub.deleteLater()
-        self.chat_sources_label.clear()
+        self._set_chat_sources([])
+
+    def _set_chat_sources(self, sources: list[str]) -> None:
+        chips = [
+            (
+                f"<span style=\"display:inline-block; margin:0 6px 4px 0; "
+                f"padding:3px 9px; border-radius:999px; "
+                f"background:{ACCENT_S}; border:1px solid {ACCENT_G}; "
+                f"color:{ACCENT2}; font-size:11px; "
+                f"font-family:'Courier New', monospace;\">{escape(source)}</span>"
+            )
+            for source in sources
+        ]
+        self.chat_sources_label.setText("".join(chips))
 
     # ── Data helpers ──────────────────────────────────────────────────────────
 

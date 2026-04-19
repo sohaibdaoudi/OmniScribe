@@ -1,45 +1,51 @@
-# OmniScribe MVP Desktop (PyQt + SQLite)
+# OmniScribe Desktop (PyQt + SQLite)
 
-This repository contains a complete Phase 0 MVP desktop application using PyQt.
+OmniScribe is a desktop app for converting lecture audio and supporting documents into transcripts, structured notes, and grounded AI chat answers.
 
-Implemented flow:
+## Recent Updates
 
-1. User uploads audio and optional documents.
-2. Audio is sent to Groq Whisper for raw transcription.
-3. Raw transcript is sent to Groq Llama 4 Scout for correction.
-4. Both transcript versions are stored in SQLite.
-5. User can upload standalone documents.
-6. User can generate notes from corrected transcript in two modes:
-   - Exact teacher wording
-   - Reformulated version
-7. User can ask questions in chat grounded on corrected transcripts and uploaded documents.
+- Dynamic API health status in the sidebar (startup check + periodic checks).
+- Attachment chips for audio/doc selections with remove actions.
+- Audio attachment replacement confirmation and document selection deduplication.
+- Determinate progress bar flow from 0% to 100% during audio processing.
+- Notes are rendered as Markdown (instead of raw Markdown text output).
+- Chat source labels shown as separated chips and deduplicated.
+- Improved RAG retrieval with better chunking, source diversity, and document weighting.
 
-## Stack
+## Current Capabilities
+
+1. Upload one audio file and optional supporting documents in a single pipeline.
+2. Transcribe audio with Groq Whisper and save both raw and corrected transcript versions.
+3. Upload standalone documents and optionally link them to a selected audio session.
+4. Generate notes from corrected transcripts in two modes:
+  - Exact teacher wording
+  - Reformulated student-friendly wording
+5. Ask questions in AI Chat using RAG over corrected transcripts and extracted document text.
+6. View API readiness status in-app (ready/loading/error).
+
+## Tech Stack
 
 - UI: PyQt6
 - Database: SQLite
-- API: Groq
-  - Whisper transcription
-  - Transcript correction
-  - Notes generation
-  - Chat response generation (RAG style with local retrieval)
+- API: Groq (OpenAI-compatible endpoints)
 - Package manager: uv
 
 ## Project Structure
 
-- `app/main.py` - application bootstrap
-- `app/config.py` - environment and path config
-- `app/database.py` - SQLite schema + data access methods
-- `app/services/groq_client.py` - Groq API wrappers
-- `app/services/transcription_service.py` - audio upload and transcript correction pipeline
-- `app/services/document_service.py` - document storage and text extraction (PDF/TXT/DOCX)
-- `app/services/notes_service.py` - notes generation + persistence
-- `app/services/rag_service.py` - simple retrieval + Groq grounded answer generation
-- `app/ui/main_window.py` - desktop UI
-- `app/ui/workers.py` - worker for background jobs
-- `scripts/init_db.sql` - SQLite initialization script
-- `.env.example` - required environment variables
-- `run.py` - alternate run entrypoint
+- app/main.py: application bootstrap and service wiring
+- app/config.py: environment and path configuration
+- app/database.py: SQLite schema and data access methods
+- app/services/groq_client.py: Groq API wrappers (transcription, chat, health check)
+- app/services/api_status_service.py: API availability status mapping for UI
+- app/services/transcription_service.py: audio pipeline and transcript correction
+- app/services/document_service.py: document storage and text extraction (PDF, DOCX, TXT/MD)
+- app/services/notes_service.py: notes generation and persistence
+- app/services/rag_service.py: retrieval and grounded answer generation
+- app/ui/main_window.py: desktop UI
+- app/ui/workers.py: background worker for non-blocking tasks
+- scripts/init_db.sql: SQLite initialization script
+- .env.example: environment variable template
+- run.py: alternate run entrypoint
 
 ## Requirements
 
@@ -47,7 +53,7 @@ Implemented flow:
 - uv installed
 - Groq API key
 
-## Setup (uv)
+## Setup
 
 1. Install dependencies:
 
@@ -61,20 +67,21 @@ uv sync
 cp .env.example .env
 ```
 
-3. Set your key in `.env`:
+3. Configure required environment variables in .env:
 
 ```env
 GROQ_API_KEY=your_groq_api_key_here
-```
-
-Optional model overrides:
-
-```env
 GROQ_WHISPER_MODEL=whisper-large-v3
-GROQ_CHAT_MODEL=meta-llama/llama-4-scout-17b-16e-instruct
+GROQ_CHAT_MODEL=llama-3.3-70b-versatile
+OMNISCRIBE_DB_PATH=omniscribe.db
+OMNISCRIBE_STORAGE_DIR=storage
+OMNISCRIBE_AUDIO_DIR=storage/audio
+OMNISCRIBE_DOCUMENT_DIR=storage/documents
 ```
 
 ## Run
+
+Preferred:
 
 ```bash
 uv run omniscribe
@@ -83,39 +90,32 @@ uv run omniscribe
 Alternatives:
 
 ```bash
-uv run python run.py
+uv run run.py
+uv run main.py
 uv run python -m app.main
 ```
 
-## Database
+## User Flow
 
-The app auto-initializes SQLite on startup (`omniscribe.db` by default).
+1. Open Audio and select one audio attachment.
+2. Optionally attach supporting documents before transcription.
+3. Click Transcribe and monitor staged progress from 0% to 100%.
+4. Review raw and corrected transcripts in the transcripts view.
+5. Upload additional documents from the Documents page and link to an audio session if needed.
+6. Generate notes in the selected note mode and view rendered Markdown output.
+7. Use AI Chat to ask grounded questions and review source chips for provenance.
 
-You can also initialize manually:
+## Data Stored
 
-```bash
-sqlite3 omniscribe.db < scripts/init_db.sql
-```
-
-Persisted entities:
-
-- Audio metadata
+- Audio metadata and stored file path
 - Raw transcript
 - Corrected transcript
 - Uploaded documents and extracted text
-- Generated notes
+- Generated notes by mode
 
-## MVP User Flow
+## Implementation Notes
 
-1. Open `Audio & Transcripts` tab.
-2. Select audio and optional documents, then click `Upload + Transcribe`.
-3. View raw and corrected transcripts.
-4. Open `Documents` tab to upload extra files.
-5. Open `Notes` tab to generate notes in selected mode.
-6. Open `AI Chat` tab and ask questions against corrected transcripts + documents.
-
-## Notes
-
-- Long-running operations run in background worker threads to keep UI responsive.
-- Retrieval is intentionally simple for MVP: local chunking + token overlap ranking.
-- Chat answer generation is done by Groq using retrieved context.
+- Long-running operations run in background worker threads to keep the UI responsive.
+- API health checks run asynchronously at startup and every 20 seconds.
+- RAG retrieval chunks transcripts/documents and selects diverse context chunks.
+- Chat sources are deduplicated before display.

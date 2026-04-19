@@ -33,7 +33,10 @@ class NotesService:
                 "Keep key meaning accurate and use headings and bullet points."
             )
 
-        system_prompt = "You create concise, well-structured lecture notes."
+        system_prompt = (
+            "You create concise, well-structured lecture notes in Markdown. "
+            "Do not wrap the output in code fences."
+        )
         user_prompt = (
             f"{style_instruction}\n\n"
             "Transcript:\n"

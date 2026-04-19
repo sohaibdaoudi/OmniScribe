@@ -1008,11 +1008,18 @@ class MainWindow(QMainWindow):
         c_lay.setSpacing(0)
 
         notes_panel = PanelFrame("notes", "generated", tag_live=True)
-        self.notes_output = QPlainTextEdit()
+        self.notes_output = QTextEdit()
         self.notes_output.setReadOnly(True)
         self.notes_output.setStyleSheet(
-            f"background: transparent; border: none; color: {TEXT2}; "
-            f"font-size: 13.5px; line-height: 1.85;"
+            f"QTextEdit {{ background: transparent; border: none; color: {TEXT2}; font-size: 13.5px; }}"
+        )
+        self.notes_output.document().setDefaultStyleSheet(
+            f"""
+            h1, h2, h3, h4, h5, h6 {{ color: {TEXT}; margin-top: 12px; margin-bottom: 6px; }}
+            p, li {{ color: {TEXT2}; }}
+            code {{ background: {BG3}; color: {TEXT}; border-radius: 4px; padding: 1px 4px; }}
+            pre {{ background: {BG3}; color: {TEXT}; border: 1px solid {BORDER}; border-radius: 8px; padding: 10px; }}
+            """
         )
         notes_panel.body_layout().addWidget(self.notes_output)
         c_lay.addWidget(notes_panel, 1)
@@ -1293,7 +1300,7 @@ class MainWindow(QMainWindow):
 
         def on_success(notes: str) -> None:
             self.generate_notes_button.setEnabled(True)
-            self.notes_output.setPlainText(notes)
+            self._set_notes_markdown(notes)
             self.statusBar().showMessage("Notes generated.")
 
         def on_error(msg: str) -> None:
@@ -1525,6 +1532,19 @@ class MainWindow(QMainWindow):
         if doc:
             self.document_text_preview.setPlainText(str(doc.get("extracted_text", "")))
 
+    def _set_notes_markdown(self, content: str) -> None:
+        text = content.strip()
+
+        # Some model responses wrap markdown in a fenced block; unwrap it for readable rendering.
+        for _ in range(2):
+            lines = text.splitlines()
+            if len(lines) >= 2 and lines[0].strip().startswith("```") and lines[-1].strip() == "```":
+                text = "\n".join(lines[1:-1]).strip()
+            else:
+                break
+
+        self.notes_output.setMarkdown(text if text else "No notes generated yet.")
+
     def _load_latest_note(self) -> None:
         audio_id = self._combo_audio_id(self.notes_audio_combo)
         if audio_id is None:
@@ -1533,7 +1553,7 @@ class MainWindow(QMainWindow):
 
         mode = str(self.notes_mode_combo.currentData())
         note = self.database.get_latest_note(audio_id=audio_id, mode=mode)
-        self.notes_output.setPlainText(
+        self._set_notes_markdown(
             str(note.get("content", "")) if note else "No notes generated yet."
         )
 

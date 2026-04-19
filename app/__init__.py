@@ -1,0 +1,1 @@
+"""OmniScribe MVP application package."""

@@ -1,0 +1,37 @@
+PRAGMA foreign_keys = ON;
+
+CREATE TABLE IF NOT EXISTS audios (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    title TEXT NOT NULL,
+    original_filename TEXT NOT NULL,
+    stored_path TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS transcripts (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    audio_id INTEGER NOT NULL UNIQUE,
+    raw_text TEXT NOT NULL,
+    corrected_text TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(audio_id) REFERENCES audios(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS documents (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    audio_id INTEGER NULL,
+    original_filename TEXT NOT NULL,
+    stored_path TEXT NOT NULL,
+    extracted_text TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(audio_id) REFERENCES audios(id) ON DELETE SET NULL
+);
+
+CREATE TABLE IF NOT EXISTS notes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    audio_id INTEGER NOT NULL,
+    mode TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(audio_id) REFERENCES audios(id) ON DELETE CASCADE
+);

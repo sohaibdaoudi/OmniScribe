@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from html import escape
 from typing import Any, Callable
 
 from PyQt6.QtCore import Qt, QThread, QTimer, QSize, QPointF
@@ -479,6 +478,7 @@ class MainWindow(QMainWindow):
         self._selected_audio_documents: list[str] = []
         self._selected_document_paths: list[str] = []
         self._documents_cache: dict[int, dict[str, Any]] = {}
+        self._documents_row_cache: dict[int, dict[str, Any]] = {}
         self._nav_items: list[NavItem] = []
 
         self.setWindowTitle("OmniScribe")
@@ -490,18 +490,20 @@ class MainWindow(QMainWindow):
             QMainWindow {{ background: {BG0}; }}
             QWidget {{ background: {BG0}; color: {TEXT}; font-family: 'Segoe UI', 'SF Pro Display', sans-serif; }}
             QScrollBar:vertical {{
-                background: transparent; width: 6px; margin: 0;
+                background: transparent; width: 4px; margin: 0;
             }}
             QScrollBar::handle:vertical {{
-                background: {BG3}; border-radius: 3px; min-height: 20px;
+                background: {BG3}; border-radius: 99px; min-height: 20px;
             }}
+            QScrollBar::handle:vertical:hover {{ background: {TEXT3}; }}
             QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
             QScrollBar:horizontal {{
-                background: transparent; height: 6px; margin: 0;
+                background: transparent; height: 4px; margin: 0;
             }}
             QScrollBar::handle:horizontal {{
-                background: {BG3}; border-radius: 3px; min-width: 20px;
+                background: {BG3}; border-radius: 99px; min-width: 20px;
             }}
+            QScrollBar::handle:horizontal:hover {{ background: {TEXT3}; }}
             QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {{ width: 0; }}
             QStatusBar {{ background: {BG1}; color: {TEXT3}; font-size: 11px; border-top: 1px solid {BORDER}; }}
         """)
@@ -664,7 +666,7 @@ class MainWindow(QMainWindow):
         bar.setStyleSheet(f"background: {BG0}; border-bottom: 1px solid {BORDER};")
         lay = QHBoxLayout(bar)
         lay.setContentsMargins(24, 0, 0, 0)
-        lay.setSpacing(0)
+        lay.setSpacing(2)
 
         buttons: list[QPushButton] = []
 
@@ -673,13 +675,17 @@ class MainWindow(QMainWindow):
             for i, b in enumerate(buttons):
                 if i == idx:
                     b.setStyleSheet(
-                        f"color: {ACCENT2}; background: transparent; border: none; "
-                        f"border-bottom: 2px solid {ACCENT}; padding: 12px 16px; font-size: 13px;"
+                        f"QPushButton {{ color: {ACCENT2}; background: transparent; border: none; "
+                        f"border-bottom: 2px solid {ACCENT}; padding: 14px 16px; "
+                        f"font-size: 13px; margin-bottom: -1px; }}"
+                        f"QPushButton:hover {{ color: {ACCENT2}; }}"
                     )
                 else:
                     b.setStyleSheet(
-                        f"color: {TEXT3}; background: transparent; border: none; "
-                        f"border-bottom: 2px solid transparent; padding: 12px 16px; font-size: 13px;"
+                        f"QPushButton {{ color: {TEXT3}; background: transparent; border: none; "
+                        f"border-bottom: 2px solid transparent; padding: 14px 16px; "
+                        f"font-size: 13px; margin-bottom: -1px; }}"
+                        f"QPushButton:hover {{ color: {TEXT2}; }}"
                     )
 
         for i, lbl in enumerate(labels):
@@ -803,7 +809,11 @@ class MainWindow(QMainWindow):
         )
         pw_lay = QHBoxLayout(self.progress_widget)
         pw_lay.setContentsMargins(14, 10, 14, 10)
-        self.progress_label = MonoLabel("Transcribing...", ACCENT2)
+        pw_lay.setSpacing(12)
+        self.progress_label = QLabel("Transcribing audio…")
+        self.progress_label.setStyleSheet(
+            f"color: {ACCENT2}; font-size: 12px; font-family: 'Courier New', monospace;"
+        )
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 0)  # indeterminate
         self.progress_bar.setFixedHeight(3)
@@ -908,26 +918,42 @@ class MainWindow(QMainWindow):
         self.documents_table = QTableWidget(0, 4)
         self.documents_table.setHorizontalHeaderLabels(["Filename", "Linked Session", "Preview", "Added"])
         self.documents_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.documents_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
         self.documents_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.documents_table.verticalHeader().setVisible(False)
-        self.documents_table.horizontalHeader().setStretchLastSection(True)
-        self.documents_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.ResizeToContents)
+        self.documents_table.verticalHeader().setDefaultSectionSize(42)
+        self.documents_table.horizontalHeader().setStretchLastSection(False)
+        self.documents_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
+        self.documents_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
         self.documents_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        self.documents_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.documents_table.setColumnWidth(0, 300)
         self.documents_table.setShowGrid(False)
+        self.documents_table.setMouseTracking(True)
+        self.documents_table.setFocusPolicy(Qt.FocusPolicy.NoFocus)
+        self.documents_table.setWordWrap(False)
         self.documents_table.setStyleSheet(f"""
             QTableWidget {{
                 background: transparent; border: none; color: {TEXT2};
                 font-size: 13px; gridline-color: transparent;
             }}
-            QTableWidget::item {{ padding: 10px 14px; border-bottom: 1px solid {BORDER}; }}
-            QTableWidget::item:selected {{ background: {BG2}; color: {TEXT}; }}
+            QTableWidget::item {{
+                padding: 10px 14px;
+                border-bottom: 1px solid {BORDER};
+                color: {TEXT2};
+            }}
+            QTableWidget::item:hover {{ background: {BG2}; color: {TEXT}; }}
+            QTableWidget::item:selected:active, QTableWidget::item:selected:!active {{
+                background: {BG2}; color: {TEXT};
+            }}
             QHeaderView::section {{
                 background: transparent; color: {TEXT3};
                 font-size: 10px; font-family: 'Courier New', monospace;
-                text-transform: uppercase; letter-spacing: 1px;
+                text-transform: uppercase; letter-spacing: 0.06em;
                 padding: 10px 14px; border: none;
                 border-bottom: 1px solid {BORDER};
             }}
+            QTableCornerButton::section {{ background: transparent; border: none; }}
         """)
         self.documents_table.itemSelectionChanged.connect(self._show_selected_document_text)
         table_panel.body_layout().addWidget(self.documents_table)
@@ -1030,17 +1056,24 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.chat_scroll, 1)
 
         # Sources bar
-        self.chat_sources_label = QLabel("")
-        self.chat_sources_label.setWordWrap(True)
-        self.chat_sources_label.setStyleSheet("background: transparent; border: none;")
         sources_wrap = QWidget()
         sources_wrap.setStyleSheet(f"background: {BG1}; border-top: 1px solid {BORDER};")
         sw_lay = QHBoxLayout(sources_wrap)
-        sw_lay.setContentsMargins(24, 8, 24, 8)
+        sw_lay.setContentsMargins(14, 8, 14, 8)
         sw_lay.setSpacing(8)
-        sw_lay.addWidget(MonoLabel("sources:", TEXT3))
-        sw_lay.addWidget(self.chat_sources_label, 1)
+
+        src_label = QLabel("sources:")
+        src_label.setStyleSheet(f"color: {TEXT3}; font-size: 11px; font-family: 'Courier New', monospace;")
+        sw_lay.addWidget(src_label)
+
+        self.chat_sources_container = QWidget()
+        self.chat_sources_container.setStyleSheet("background: transparent; border: none;")
+        self.chat_sources_layout = QHBoxLayout(self.chat_sources_container)
+        self.chat_sources_layout.setContentsMargins(0, 0, 0, 0)
+        self.chat_sources_layout.setSpacing(8)
+        sw_lay.addWidget(self.chat_sources_container, 1)
         lay.addWidget(sources_wrap)
+        self._set_chat_sources([])
 
         # Input bar
         input_bar = QWidget()
@@ -1318,17 +1351,107 @@ class MainWindow(QMainWindow):
         self._set_chat_sources([])
 
     def _set_chat_sources(self, sources: list[str]) -> None:
-        chips = [
-            (
-                f"<span style=\"display:inline-block; margin:0 6px 4px 0; "
-                f"padding:3px 9px; border-radius:999px; "
-                f"background:{ACCENT_S}; border:1px solid {ACCENT_G}; "
-                f"color:{ACCENT2}; font-size:11px; "
-                f"font-family:'Courier New', monospace;\">{escape(source)}</span>"
+        while self.chat_sources_layout.count():
+            item = self.chat_sources_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        unique_sources: list[str] = []
+        seen: set[str] = set()
+        for source in sources:
+            normalized = source.strip()
+            if not normalized or normalized in seen:
+                continue
+            seen.add(normalized)
+            unique_sources.append(normalized)
+
+        if not unique_sources:
+            empty = QLabel("none")
+            empty.setStyleSheet(f"color: {TEXT3}; font-size: 11px; font-family: 'Courier New', monospace;")
+            self.chat_sources_layout.addWidget(empty)
+            self.chat_sources_layout.addStretch()
+            return
+
+        def display_label(source: str) -> str:
+            if source.startswith("Transcript - "):
+                return f"transcript:{source.removeprefix('Transcript - ')}"
+            if source.startswith("Document - "):
+                return source.removeprefix("Document - ")
+            return source
+
+        for source in unique_sources:
+            chip = QLabel(display_label(source))
+            chip.setStyleSheet(
+                f"color: {ACCENT2}; background: {ACCENT_S}; "
+                f"border: 1px solid {ACCENT_G}; border-radius: 99px; "
+                f"padding: 3px 9px; font-size: 11px; font-family: 'Courier New', monospace;"
             )
-            for source in sources
-        ]
-        self.chat_sources_label.setText("".join(chips))
+            self.chat_sources_layout.addWidget(chip)
+
+        self.chat_sources_layout.addStretch()
+
+    def _make_file_icon(self, filename: str) -> QLabel:
+        ext = filename.split(".")[-1].lower() if "." in filename else ""
+        if ext == "pdf":
+            tag = "PDF"
+            bg = "rgba(248,113,113,0.15)"
+            fg = RED
+        elif ext in {"doc", "docx"}:
+            tag = "DOC"
+            bg = "rgba(52,211,153,0.10)"
+            fg = GREEN
+        elif ext in {"txt", "md"}:
+            tag = "TXT"
+            bg = ACCENT_S
+            fg = ACCENT2
+        else:
+            tag = (ext[:4].upper() if ext else "FILE")
+            bg = BG3
+            fg = TEXT2
+
+        icon = QLabel(tag)
+        icon.setFixedSize(22, 22)
+        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        icon.setStyleSheet(
+            f"background: {bg}; color: {fg}; border-radius: 5px; "
+            f"font-size: 9px; font-family: 'Courier New', monospace; font-weight: 600;"
+        )
+        return icon
+
+    def _make_filename_cell(self, filename: str) -> QWidget:
+        cell = QWidget()
+        cell.setStyleSheet("background: transparent; border: none;")
+        lay = QHBoxLayout(cell)
+        lay.setContentsMargins(14, 4, 14, 4)
+        lay.setSpacing(8)
+        lay.addWidget(self._make_file_icon(filename))
+
+        name = QLabel(filename)
+        name.setStyleSheet(f"color: {TEXT2}; font-size: 13px; background: transparent; border: none;")
+        lay.addWidget(name, 1)
+        return cell
+
+    def _make_linked_cell(self, linked: str) -> QWidget:
+        cell = QWidget()
+        cell.setStyleSheet("background: transparent; border: none;")
+        lay = QHBoxLayout(cell)
+        lay.setContentsMargins(14, 4, 14, 4)
+        lay.setSpacing(0)
+
+        lbl = QLabel(linked)
+        if linked != "—":
+            lbl.setStyleSheet(
+                f"background: {AMBER_S}; color: {AMBER}; border-radius: 99px; "
+                f"padding: 2px 8px; font-size: 10px; font-family: 'Courier New', monospace;"
+            )
+        else:
+            lbl.setStyleSheet(
+                f"color: {TEXT3}; font-size: 13px; background: transparent; border: none;"
+            )
+
+        lay.addWidget(lbl, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        lay.addStretch()
+        return cell
 
     # ── Data helpers ──────────────────────────────────────────────────────────
 
@@ -1352,17 +1475,42 @@ class MainWindow(QMainWindow):
         documents = self.database.list_documents()
         self.documents_table.setRowCount(len(documents))
         self._documents_cache = {}
+        self._documents_row_cache = {}
 
         for row, doc in enumerate(documents):
             doc_id = int(doc["id"])
             self._documents_cache[doc_id] = doc
-            linked = doc.get("audio_title") or "—"
-            preview = str(doc.get("extracted_text", ""))[:120] + "…"
+            self._documents_row_cache[row] = doc
 
-            self.documents_table.setItem(row, 0, QTableWidgetItem(str(doc.get("original_filename", ""))))
-            self.documents_table.setItem(row, 1, QTableWidgetItem(str(linked)))
-            self.documents_table.setItem(row, 2, QTableWidgetItem(preview))
-            self.documents_table.setItem(row, 3, QTableWidgetItem(str(doc.get("created_at", ""))[:10]))
+            filename = str(doc.get("original_filename", ""))
+            linked = doc.get("audio_title") or "—"
+            raw_preview = str(doc.get("extracted_text", "")).replace("\n", " ").strip()
+            preview = (raw_preview[:120] + "…") if len(raw_preview) > 120 else raw_preview
+
+            # Keep first two items empty because those columns are fully custom widgets.
+            filename_item = QTableWidgetItem("")
+            linked_item = QTableWidgetItem("")
+            preview_item = QTableWidgetItem(preview)
+            added_item = QTableWidgetItem(str(doc.get("created_at", ""))[:10])
+
+            filename_item.setData(Qt.ItemDataRole.UserRole, filename)
+            linked_item.setData(Qt.ItemDataRole.UserRole, str(linked))
+
+            for item in (filename_item, linked_item, preview_item, added_item):
+                item.setFlags(Qt.ItemFlag.ItemIsSelectable | Qt.ItemFlag.ItemIsEnabled)
+
+            preview_item.setForeground(QColor(TEXT3))
+            preview_item.setToolTip(raw_preview)
+            added_item.setForeground(QColor(TEXT2))
+
+            self.documents_table.setItem(row, 0, filename_item)
+            self.documents_table.setItem(row, 1, linked_item)
+            self.documents_table.setItem(row, 2, preview_item)
+            self.documents_table.setItem(row, 3, added_item)
+
+            self.documents_table.setCellWidget(row, 0, self._make_filename_cell(filename))
+            self.documents_table.setCellWidget(row, 1, self._make_linked_cell(str(linked)))
+            self.documents_table.setRowHeight(row, 42)
 
         if documents:
             self.documents_table.selectRow(0)
@@ -1373,13 +1521,7 @@ class MainWindow(QMainWindow):
             self.document_text_preview.clear()
             return
 
-        id_item = self.documents_table.item(rows[0].row(), 0)
-        if id_item is None:
-            return
-
-        # match by filename to cache
-        filename = id_item.text()
-        doc = next((d for d in self._documents_cache.values() if str(d.get("original_filename", "")) == filename), None)
+        doc = self._documents_row_cache.get(rows[0].row())
         if doc:
             self.document_text_preview.setPlainText(str(doc.get("extracted_text", "")))
 

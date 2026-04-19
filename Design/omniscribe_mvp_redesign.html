@@ -1,0 +1,709 @@
+
+<style>
+  @import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@300;400;500;600&family=DM+Mono:wght@400;500&display=swap');
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  :root {
+    --bg: #0d0e11;
+    --bg2: #14161b;
+    --bg3: #1c1f27;
+    --bg4: #242832;
+    --border: rgba(255,255,255,0.07);
+    --border2: rgba(255,255,255,0.13);
+    --text: #e8eaf0;
+    --text2: #8b8fa8;
+    --text3: #555a70;
+    --accent: #6b6ef9;
+    --accent2: #8b8dfa;
+    --accent-soft: rgba(107,110,249,0.12);
+    --accent-glow: rgba(107,110,249,0.25);
+    --green: #34d399;
+    --green-soft: rgba(52,211,153,0.1);
+    --amber: #fbbf24;
+    --amber-soft: rgba(251,191,36,0.1);
+    --red: #f87171;
+    --font: 'DM Sans', sans-serif;
+    --mono: 'DM Mono', monospace;
+    --r: 10px;
+    --r2: 14px;
+  }
+
+  .app { 
+    font-family: var(--font); 
+    background: var(--bg); 
+    color: var(--text); 
+    display: flex; 
+    height: 640px; 
+    border-radius: 16px; 
+    overflow: hidden;
+    border: 1px solid var(--border2);
+  }
+
+  /* SIDEBAR */
+  .sidebar { 
+    width: 220px; 
+    background: var(--bg2); 
+    border-right: 1px solid var(--border);
+    display: flex; 
+    flex-direction: column;
+    flex-shrink: 0;
+  }
+
+  .logo { 
+    padding: 22px 18px 16px; 
+    display: flex; 
+    align-items: center; 
+    gap: 10px;
+    border-bottom: 1px solid var(--border);
+  }
+
+  .logo-icon {
+    width: 30px; height: 30px;
+    background: var(--accent);
+    border-radius: 8px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .logo-icon svg { width: 16px; height: 16px; fill: white; }
+  .logo-name { font-size: 15px; font-weight: 600; letter-spacing: -0.3px; color: var(--text); }
+  .logo-tag { font-size: 10px; color: var(--text3); font-family: var(--mono); margin-top: 1px; }
+
+  .nav { padding: 12px 10px; flex: 1; display: flex; flex-direction: column; gap: 2px; }
+
+  .nav-section-label {
+    font-size: 10px;
+    font-family: var(--mono);
+    color: var(--text3);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    padding: 10px 8px 4px;
+  }
+
+  .nav-item {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 10px;
+    border-radius: var(--r);
+    cursor: pointer;
+    font-size: 13.5px;
+    color: var(--text2);
+    transition: all 0.15s;
+    border: 1px solid transparent;
+  }
+
+  .nav-item:hover { background: var(--bg3); color: var(--text); }
+  .nav-item.active { background: var(--accent-soft); color: var(--accent2); border-color: var(--accent-glow); }
+
+  .nav-icon { width: 15px; height: 15px; opacity: 0.7; flex-shrink: 0; }
+  .nav-item.active .nav-icon { opacity: 1; }
+
+  .nav-badge {
+    margin-left: auto;
+    font-size: 10px;
+    font-family: var(--mono);
+    background: var(--bg4);
+    padding: 2px 6px;
+    border-radius: 99px;
+    color: var(--text3);
+  }
+
+  .nav-item.active .nav-badge { background: var(--accent-glow); color: var(--accent2); }
+
+  .sidebar-footer {
+    padding: 12px 10px;
+    border-top: 1px solid var(--border);
+  }
+
+  .status-pill {
+    display: flex; align-items: center; gap: 8px;
+    padding: 8px 10px;
+    background: var(--green-soft);
+    border-radius: var(--r);
+    font-size: 12px;
+    color: var(--green);
+    font-family: var(--mono);
+  }
+
+  .dot { width: 6px; height: 6px; border-radius: 50%; background: var(--green); animation: pulse 2s infinite; }
+
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+
+  /* MAIN */
+  .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
+
+  .topbar {
+    height: 56px;
+    padding: 0 24px;
+    display: flex; align-items: center; justify-content: space-between;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .page-title { font-size: 15px; font-weight: 600; letter-spacing: -0.2px; }
+  .page-sub { font-size: 12px; color: var(--text3); font-family: var(--mono); margin-top: 1px; }
+
+  .topbar-actions { display: flex; align-items: center; gap: 8px; }
+
+  .btn {
+    padding: 7px 14px; border-radius: var(--r); font-family: var(--font);
+    font-size: 13px; cursor: pointer; transition: all 0.15s; border: none;
+  }
+
+  .btn-ghost { background: transparent; color: var(--text2); border: 1px solid var(--border2); }
+  .btn-ghost:hover { background: var(--bg3); color: var(--text); }
+
+  .btn-primary { background: var(--accent); color: white; font-weight: 500; }
+  .btn-primary:hover { background: var(--accent2); }
+
+  .content { flex: 1; overflow: auto; padding: 24px; display: flex; flex-direction: column; gap: 20px; }
+
+  /* UPLOAD CARD */
+  .upload-zone {
+    border: 1.5px dashed var(--border2);
+    border-radius: var(--r2);
+    padding: 32px;
+    text-align: center;
+    cursor: pointer;
+    transition: all 0.2s;
+    background: var(--bg2);
+    position: relative;
+  }
+
+  .upload-zone:hover { border-color: var(--accent); background: var(--accent-soft); }
+
+  .upload-icon {
+    width: 44px; height: 44px;
+    background: var(--bg3);
+    border-radius: 12px;
+    display: flex; align-items: center; justify-content: center;
+    margin: 0 auto 14px;
+    border: 1px solid var(--border2);
+  }
+
+  .upload-icon svg { width: 20px; height: 20px; stroke: var(--accent2); fill: none; }
+  .upload-title { font-size: 14px; font-weight: 500; margin-bottom: 4px; }
+  .upload-sub { font-size: 12px; color: var(--text3); }
+  .upload-formats { 
+    margin-top: 12px; display: flex; gap: 6px; justify-content: center; flex-wrap: wrap;
+  }
+  .fmt-tag {
+    font-size: 10px; font-family: var(--mono); padding: 3px 8px;
+    background: var(--bg4); border: 1px solid var(--border); border-radius: 99px;
+    color: var(--text3);
+  }
+
+  /* FORM FIELDS */
+  .form-row { display: flex; gap: 12px; }
+  .form-group { flex: 1; display: flex; flex-direction: column; gap: 6px; }
+  .form-label { font-size: 11px; font-family: var(--mono); color: var(--text3); letter-spacing: 0.05em; text-transform: uppercase; }
+
+  .input-field {
+    background: var(--bg3); border: 1px solid var(--border2); border-radius: var(--r);
+    padding: 9px 13px; font-family: var(--font); font-size: 13.5px; color: var(--text);
+    outline: none; transition: border-color 0.15s; width: 100%;
+  }
+
+  .input-field:focus { border-color: var(--accent); }
+  .input-field::placeholder { color: var(--text3); }
+
+  select.input-field { cursor: pointer; }
+  select.input-field option { background: var(--bg3); }
+
+  /* TRANSCRIPT PANEL */
+  .panels { display: flex; gap: 16px; flex: 1; min-height: 0; }
+
+  .panel {
+    flex: 1; background: var(--bg2); border: 1px solid var(--border);
+    border-radius: var(--r2); display: flex; flex-direction: column; overflow: hidden;
+    min-height: 200px;
+  }
+
+  .panel-head {
+    padding: 12px 16px; border-bottom: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: space-between;
+    flex-shrink: 0;
+  }
+
+  .panel-title { font-size: 12px; font-family: var(--mono); color: var(--text2); }
+  .panel-tag {
+    font-size: 10px; font-family: var(--mono); padding: 2px 8px;
+    border-radius: 99px; background: var(--bg4); color: var(--text3);
+    border: 1px solid var(--border);
+  }
+
+  .panel-tag.live { background: var(--green-soft); color: var(--green); border-color: transparent; }
+
+  .panel-body { flex: 1; padding: 14px 16px; overflow-y: auto; font-size: 13px; line-height: 1.7; color: var(--text2); }
+
+  /* CHAT */
+  .chat-area { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 12px; }
+
+  .msg { max-width: 78%; display: flex; flex-direction: column; gap: 4px; }
+  .msg.user { align-self: flex-end; align-items: flex-end; }
+  .msg.ai { align-self: flex-start; align-items: flex-start; }
+
+  .bubble {
+    padding: 10px 15px; border-radius: 16px; font-size: 13.5px; line-height: 1.6;
+  }
+
+  .msg.user .bubble { background: var(--accent); color: white; border-bottom-right-radius: 4px; }
+  .msg.ai .bubble { background: var(--bg3); color: var(--text); border-bottom-left-radius: 4px; border: 1px solid var(--border); }
+
+  .msg-meta { font-size: 11px; color: var(--text3); font-family: var(--mono); }
+
+  .sources-bar {
+    padding: 8px 14px; border-top: 1px solid var(--border);
+    display: flex; gap: 8px; align-items: center; flex-wrap: wrap;
+    flex-shrink: 0;
+  }
+
+  .source-chip {
+    font-size: 11px; font-family: var(--mono);
+    padding: 3px 9px; border-radius: 99px;
+    background: var(--accent-soft); color: var(--accent2);
+    border: 1px solid var(--accent-glow);
+  }
+
+  .src-label { font-size: 11px; color: var(--text3); font-family: var(--mono); }
+
+  .chat-input-bar {
+    padding: 12px 16px; border-top: 1px solid var(--border);
+    display: flex; gap: 10px; align-items: flex-end;
+    flex-shrink: 0;
+  }
+
+  .chat-input {
+    flex: 1; background: var(--bg3); border: 1px solid var(--border2);
+    border-radius: 12px; padding: 9px 14px; font-family: var(--font);
+    font-size: 13.5px; color: var(--text); outline: none; resize: none;
+    transition: border-color 0.15s; line-height: 1.5; min-height: 40px;
+  }
+
+  .chat-input:focus { border-color: var(--accent); }
+  .chat-input::placeholder { color: var(--text3); }
+
+  .send-btn {
+    width: 38px; height: 38px; background: var(--accent);
+    border: none; border-radius: 10px; cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.15s; flex-shrink: 0;
+  }
+
+  .send-btn:hover { background: var(--accent2); transform: scale(1.05); }
+  .send-btn svg { width: 15px; height: 15px; fill: white; }
+
+  /* NOTES */
+  .notes-area { flex: 1; overflow-y: auto; padding: 20px; }
+
+  .note-block {
+    font-size: 13.5px; line-height: 1.85; color: var(--text2);
+    white-space: pre-wrap;
+  }
+
+  .note-h { 
+    font-size: 14px; font-weight: 600; color: var(--text);
+    margin: 20px 0 6px; letter-spacing: -0.1px;
+  }
+
+  .note-h:first-child { margin-top: 0; }
+
+  .note-bullet { padding-left: 16px; border-left: 2px solid var(--border2); margin: 4px 0; }
+
+  /* DOCS TABLE */
+  .docs-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  .docs-table th { 
+    font-size: 10px; font-family: var(--mono); color: var(--text3);
+    text-transform: uppercase; letter-spacing: 0.06em;
+    padding: 10px 14px; text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  .docs-table td { padding: 10px 14px; border-bottom: 1px solid var(--border); color: var(--text2); }
+  .docs-table tr:hover td { background: var(--bg3); color: var(--text); }
+  .docs-table tr:last-child td { border-bottom: none; }
+
+  .file-icon {
+    display: inline-flex; align-items: center; justify-content: center;
+    width: 22px; height: 22px; border-radius: 5px; margin-right: 8px;
+    font-size: 9px; font-family: var(--mono); font-weight: 500;
+    vertical-align: middle;
+  }
+
+  .file-pdf { background: rgba(248,113,113,0.15); color: var(--red); }
+  .file-txt { background: var(--accent-soft); color: var(--accent2); }
+  .file-docx { background: rgba(52,211,153,0.1); color: var(--green); }
+
+  .linked-badge {
+    font-size: 10px; font-family: var(--mono); padding: 2px 8px;
+    background: var(--amber-soft); color: var(--amber); border-radius: 99px;
+  }
+
+  /* TABS */
+  .tab-bar {
+    display: flex; gap: 2px; padding: 0 24px;
+    border-bottom: 1px solid var(--border);
+    flex-shrink: 0;
+  }
+
+  .tab {
+    padding: 14px 16px; font-size: 13px; cursor: pointer;
+    color: var(--text3); border-bottom: 2px solid transparent;
+    transition: all 0.15s; margin-bottom: -1px;
+    white-space: nowrap;
+  }
+
+  .tab:hover { color: var(--text2); }
+  .tab.active { color: var(--accent2); border-bottom-color: var(--accent); }
+
+  /* PROGRESS */
+  .progress-wrap { 
+    display: flex; align-items: center; gap: 12px;
+    padding: 10px 14px; background: var(--accent-soft);
+    border-radius: var(--r); border: 1px solid var(--accent-glow);
+    font-size: 12px; font-family: var(--mono); color: var(--accent2);
+  }
+
+  .progress-bar-bg { flex: 1; height: 3px; background: var(--bg4); border-radius: 99px; }
+  .progress-bar-fill { height: 100%; border-radius: 99px; background: var(--accent); animation: grow 1.5s ease-out forwards; }
+  @keyframes grow { from { width: 0%; } to { width: 72%; } }
+
+  /* SCROLLBAR */
+  ::-webkit-scrollbar { width: 4px; height: 4px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: var(--bg4); border-radius: 99px; }
+  ::-webkit-scrollbar-thumb:hover { background: var(--text3); }
+
+  .hidden { display: none !important; }
+</style>
+
+<div class="app">
+  <!-- SIDEBAR -->
+  <div class="sidebar">
+    <div class="logo">
+      <div class="logo-icon">
+        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-2 14.5v-9l6 4.5-6 4.5z"/></svg>
+      </div>
+      <div>
+        <div class="logo-name">OmniScribe</div>
+        <div class="logo-tag">v0.1 MVP</div>
+      </div>
+    </div>
+    <nav class="nav">
+      <div class="nav-section-label">Workspace</div>
+      <div class="nav-item active" onclick="showTab('audio',this)">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/></svg>
+        Audio
+        <span class="nav-badge">3</span>
+      </div>
+      <div class="nav-item" onclick="showTab('docs',this)">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
+        Documents
+        <span class="nav-badge">7</span>
+      </div>
+      <div class="nav-item" onclick="showTab('notes',this)">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
+        Notes
+      </div>
+      <div class="nav-item" onclick="showTab('chat',this)">
+        <svg class="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/></svg>
+        AI Chat
+      </div>
+    </nav>
+    <div class="sidebar-footer">
+      <div class="status-pill">
+        <div class="dot"></div>
+        whisper-large ready
+      </div>
+    </div>
+  </div>
+
+  <!-- MAIN AREA -->
+  <div class="main">
+    <!-- AUDIO TAB -->
+    <div id="tab-audio" class="tab-content" style="display:flex;flex-direction:column;flex:1;overflow:hidden;">
+      <div class="topbar">
+        <div>
+          <div class="page-title">Audio & Transcripts</div>
+          <div class="page-sub">upload → transcribe → review</div>
+        </div>
+        <div class="topbar-actions">
+          <button class="btn btn-ghost">Refresh</button>
+          <button class="btn btn-primary">+ Upload Audio</button>
+        </div>
+      </div>
+
+      <div class="tab-bar">
+        <div class="tab active" onclick="showSubTab('upload',this,'audio')">Upload</div>
+        <div class="tab" onclick="showSubTab('transcripts',this,'audio')">Transcripts</div>
+      </div>
+
+      <div class="content" id="audio-upload" style="overflow:auto;">
+        <div class="upload-zone" onclick="this.style.borderColor='var(--accent)'">
+          <div class="upload-icon">
+            <svg viewBox="0 0 24 24"><path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="17 8 12 3 7 8"/><line x1="12" y1="3" x2="12" y2="15"/></svg>
+          </div>
+          <div class="upload-title">Drop your audio file here</div>
+          <div class="upload-sub">or click to browse files</div>
+          <div class="upload-formats">
+            <span class="fmt-tag">mp3</span><span class="fmt-tag">wav</span>
+            <span class="fmt-tag">m4a</span><span class="fmt-tag">flac</span>
+            <span class="fmt-tag">ogg</span><span class="fmt-tag">aac</span>
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <div class="form-label">Lecture title</div>
+            <input class="input-field" type="text" placeholder="e.g. Introduction to Machine Learning — Lecture 3">
+          </div>
+        </div>
+
+        <div class="form-row">
+          <div class="form-group">
+            <div class="form-label">Attach supporting documents (optional)</div>
+            <div class="upload-zone" style="padding:18px 24px;text-align:left;display:flex;align-items:center;gap:14px;">
+              <div class="upload-icon" style="margin:0;width:36px;height:36px;flex-shrink:0;">
+                <svg viewBox="0 0 24 24"><path d="M14 2H6a2 2 0 00-2 2v16a2 2 0 002 2h12a2 2 0 002-2V8z"/><polyline points="14,2 14,8 20,8"/></svg>
+              </div>
+              <div>
+                <div class="upload-title" style="font-size:13px;text-align:left;">Attach slides, PDFs, notes</div>
+                <div class="upload-sub" style="font-size:11px;text-align:left;">Will be linked to this audio session</div>
+              </div>
+              <button class="btn btn-ghost" style="margin-left:auto;font-size:12px;">Browse</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="progress-wrap">
+          <div>Transcribing lecture_03_ml.mp3</div>
+          <div class="progress-bar-bg"><div class="progress-bar-fill"></div></div>
+          <div>72%</div>
+        </div>
+
+        <button class="btn btn-primary" style="padding:10px 24px;font-size:14px;width:fit-content;">
+          Upload & Transcribe
+        </button>
+      </div>
+
+      <div class="content hidden" id="audio-transcripts" style="overflow:auto;">
+        <div class="form-row" style="margin-bottom:4px;">
+          <div class="form-group">
+            <div class="form-label">Select session</div>
+            <select class="input-field">
+              <option>3 — Introduction to ML (Lecture 3)</option>
+              <option>2 — Linear Algebra Recap</option>
+              <option>1 — Course Overview</option>
+            </select>
+          </div>
+        </div>
+        <div class="panels">
+          <div class="panel">
+            <div class="panel-head">
+              <span class="panel-title">raw transcript</span>
+              <span class="panel-tag">whisper-large-v3</span>
+            </div>
+            <div class="panel-body">...and so the gradient descent algorithm it basically uh you know you take the derivative of the loss function with respect to the weights and you move in the opposite direction. like think of it as walking down a hill blindfolded right you just keep going downhill until you hit the bottom...</div>
+          </div>
+          <div class="panel">
+            <div class="panel-head">
+              <span class="panel-title">corrected transcript</span>
+              <span class="panel-tag live">corrected</span>
+            </div>
+            <div class="panel-body">The gradient descent algorithm works by computing the derivative of the loss function with respect to the model weights, then updating the weights in the direction that minimizes the loss. Intuitively, this is analogous to descending a hill by always moving in the direction of steepest downward slope.</div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- DOCS TAB -->
+    <div id="tab-docs" class="tab-content hidden" style="display:flex;flex-direction:column;flex:1;overflow:hidden;">
+      <div class="topbar">
+        <div>
+          <div class="page-title">Documents</div>
+          <div class="page-sub">7 documents · 3 linked to sessions</div>
+        </div>
+        <div class="topbar-actions">
+          <select class="input-field" style="width:200px;padding:7px 12px;font-size:13px;">
+            <option>No linked audio</option>
+            <option>3 — Introduction to ML</option>
+            <option>2 — Linear Algebra</option>
+          </select>
+          <button class="btn btn-primary">+ Upload Docs</button>
+        </div>
+      </div>
+      <div class="content">
+        <div class="panel" style="min-height:unset;">
+          <div class="panel-head"><span class="panel-title">stored documents</span></div>
+          <table class="docs-table">
+            <thead>
+              <tr>
+                <th>Filename</th>
+                <th>Linked session</th>
+                <th>Extracted text preview</th>
+                <th>Added</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><span class="file-icon file-pdf">PDF</span>ml_lecture3_slides.pdf</td>
+                <td><span class="linked-badge">Lecture 3</span></td>
+                <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text3);">Supervised learning, loss functions, gradient descent...</td>
+                <td>2025-04-18</td>
+              </tr>
+              <tr>
+                <td><span class="file-icon file-docx">DOC</span>research_notes.docx</td>
+                <td style="color:var(--text3);">—</td>
+                <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text3);">Chapter 4: Backpropagation and chain rule...</td>
+                <td>2025-04-17</td>
+              </tr>
+              <tr>
+                <td><span class="file-icon file-txt">TXT</span>reading_list.txt</td>
+                <td style="color:var(--text3);">—</td>
+                <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text3);">Deep Learning – Goodfellow et al., 2016...</td>
+                <td>2025-04-16</td>
+              </tr>
+              <tr>
+                <td><span class="file-icon file-pdf">PDF</span>linear_algebra_cheatsheet.pdf</td>
+                <td><span class="linked-badge">Lecture 2</span></td>
+                <td style="max-width:200px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:var(--text3);">Matrix operations, eigenvalues, PCA...</td>
+                <td>2025-04-14</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div class="panel" style="flex:1;">
+          <div class="panel-head"><span class="panel-title">document preview</span><span class="panel-tag">ml_lecture3_slides.pdf</span></div>
+          <div class="panel-body">Supervised learning involves learning a mapping from inputs x to outputs y, given a training dataset of (x, y) pairs. The goal is to minimize a loss function L(ŷ, y) that measures the discrepancy between predicted and actual outputs.
+
+Common loss functions include:
+• MSE for regression: L = (1/n) Σ (ŷᵢ − yᵢ)²
+• Cross-entropy for classification: L = −Σ yᵢ log(ŷᵢ)
+
+Gradient descent updates weights θ via: θ ← θ − α ∇L(θ)</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- NOTES TAB -->
+    <div id="tab-notes" class="tab-content hidden" style="display:flex;flex-direction:column;flex:1;overflow:hidden;">
+      <div class="topbar">
+        <div>
+          <div class="page-title">Generated Notes</div>
+          <div class="page-sub">AI-structured study notes</div>
+        </div>
+        <div class="topbar-actions">
+          <select class="input-field" style="width:180px;padding:7px 12px;font-size:13px;">
+            <option>Exact teacher wording</option>
+            <option>Reformulated version</option>
+          </select>
+          <select class="input-field" style="width:180px;padding:7px 12px;font-size:13px;">
+            <option>3 — Introduction to ML</option>
+            <option>2 — Linear Algebra Recap</option>
+          </select>
+          <button class="btn btn-ghost">Load Latest</button>
+          <button class="btn btn-primary">Generate Notes</button>
+        </div>
+      </div>
+      <div class="panel" style="flex:1;margin:16px 24px;min-height:0;border-radius:var(--r2);">
+        <div class="panel-head"><span class="panel-title">notes · lecture 3</span><span class="panel-tag live">generated</span></div>
+        <div class="notes-area">
+          <div class="note-h">Gradient Descent</div>
+          <div class="note-bullet" style="color:var(--text2);font-size:13.5px;line-height:1.8;">Algorithm for minimizing the loss function by iteratively updating model weights in the direction of the negative gradient.</div>
+          <div class="note-bullet" style="color:var(--text2);font-size:13.5px;line-height:1.8;">Update rule: θ ← θ − α ∇L(θ), where α is the learning rate.</div>
+          <div class="note-bullet" style="color:var(--text2);font-size:13.5px;line-height:1.8;">"Think of it as walking down a hill blindfolded — you just keep going downhill until you hit the bottom."</div>
+
+          <div class="note-h">Loss Functions</div>
+          <div class="note-bullet" style="color:var(--text2);font-size:13.5px;line-height:1.8;">MSE (Mean Squared Error) — used for regression tasks.</div>
+          <div class="note-bullet" style="color:var(--text2);font-size:13.5px;line-height:1.8;">Cross-entropy loss — used for classification, penalizes confident wrong predictions heavily.</div>
+
+          <div class="note-h">Key Concepts to Review</div>
+          <div class="note-bullet" style="color:var(--text2);font-size:13.5px;line-height:1.8;">Backpropagation — chain rule applied to compute gradients through layers.</div>
+          <div class="note-bullet" style="color:var(--text2);font-size:13.5px;line-height:1.8;">Vanishing gradient problem — small gradients in early layers slow learning.</div>
+          <div class="note-bullet" style="color:var(--text2);font-size:13.5px;line-height:1.8;">Learning rate schedule — adaptive methods like Adam, RMSProp.</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- CHAT TAB -->
+    <div id="tab-chat" class="tab-content hidden" style="display:flex;flex-direction:column;flex:1;overflow:hidden;">
+      <div class="topbar">
+        <div>
+          <div class="page-title">AI Chat</div>
+          <div class="page-sub">RAG over your sessions + docs</div>
+        </div>
+        <div class="topbar-actions">
+          <select class="input-field" style="width:200px;padding:7px 12px;font-size:13px;">
+            <option>All sessions</option>
+            <option>3 — Introduction to ML</option>
+            <option>2 — Linear Algebra Recap</option>
+          </select>
+          <button class="btn btn-ghost">Clear chat</button>
+        </div>
+      </div>
+      <div class="chat-area" id="chat-area">
+        <div class="msg ai">
+          <div class="bubble">Hello! I have access to 3 lecture sessions and 7 documents. What would you like to know?</div>
+          <div class="msg-meta">omniscribe · RAG</div>
+        </div>
+        <div class="msg user">
+          <div class="bubble">Can you explain the gradient descent update rule from lecture 3?</div>
+          <div class="msg-meta">just now</div>
+        </div>
+        <div class="msg ai">
+          <div class="bubble">In lecture 3, the professor described gradient descent as updating weights by moving in the direction opposite to the gradient of the loss: <strong>θ ← θ − α∇L(θ)</strong>. The learning rate α controls step size. The analogy used was "walking down a hill blindfolded — you keep going downhill until you hit the bottom."</div>
+          <div class="msg-meta">omniscribe · lecture 3 + ml_lecture3_slides.pdf</div>
+        </div>
+      </div>
+      <div class="sources-bar">
+        <span class="src-label">sources:</span>
+        <span class="source-chip">transcript:3</span>
+        <span class="source-chip">ml_lecture3_slides.pdf</span>
+      </div>
+      <div class="chat-input-bar">
+        <textarea class="chat-input" rows="1" placeholder="Ask about your lectures or documents..." id="chat-input" onkeydown="handleKey(event)"></textarea>
+        <button class="send-btn" onclick="sendMsg()">
+          <svg viewBox="0 0 24 24"><path d="M22 2L11 13M22 2l-7 20-4-9-9-4 20-7z"/></svg>
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+  function showTab(id, el) {
+    document.querySelectorAll('.tab-content').forEach(t => {
+      t.style.display = 'none';
+      t.classList.add('hidden');
+    });
+    const target = document.getElementById('tab-' + id);
+    target.style.display = 'flex';
+    target.classList.remove('hidden');
+    document.querySelectorAll('.nav-item').forEach(n => n.classList.remove('active'));
+    el.classList.add('active');
+  }
+
+  function showSubTab(id, el, parent) {
+    const prefix = parent + '-';
+    document.querySelectorAll('[id^="' + prefix + '"]').forEach(t => t.classList.add('hidden'));
+    document.getElementById(prefix + id).classList.remove('hidden');
+    el.parentElement.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
+    el.classList.add('active');
+  }
+
+  function handleKey(e) {
+    if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); sendMsg(); }
+  }
+
+  function sendMsg() {
+    const input = document.getElementById('chat-input');
+    const text = input.value.trim();
+    if (!text) return;
+    const area = document.getElementById('chat-area');
+    const userDiv = document.createElement('div');
+    userDiv.className = 'msg user';
+    userDiv.innerHTML = '<div class="bubble">' + text.replace(/</g,'&lt;') + '</div><div class="msg-meta">just now</div>';
+    area.appendChild(userDiv);
+    input.value = '';
+    setTimeout(() => { area.scrollTop = area.scrollHeight; }, 50);
+  }
+</script>

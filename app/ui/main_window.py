@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PyQt6.QtCore import Qt, QThread
+from PyQt6.QtCore import Qt, QThread, QTimer
 from PyQt6.QtGui import QCloseEvent
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QTabWidget,
     QTableWidget,
@@ -234,38 +235,94 @@ class MainWindow(QMainWindow):
     def _build_chat_tab(self) -> QWidget:
         widget = QWidget()
         layout = QVBoxLayout(widget)
+        layout.setContentsMargins(20, 20, 20, 20)
+        layout.setSpacing(15)
+
+        widget.setStyleSheet("""
+            QWidget#ChatTab { background-color: transparent; }
+            QComboBox { padding: 6px; border: 1px solid #444; border-radius: 6px; background-color: #2d2d2d; color: #fff; }
+            QScrollArea { border: none; background-color: transparent; }
+            QWidget#ChatContainer { background-color: transparent; }
+            QPlainTextEdit#ChatInput { border: 1px solid #444; border-radius: 15px; padding: 10px 15px; font-size: 14px; background-color: #2d2d2d; color: #fff; }
+            QPushButton#SendButton { background-color: #1a73e8; color: white; border: none; border-radius: 15px; padding: 10px 20px; font-size: 14px; font-weight: bold; }
+            QPushButton#SendButton:hover { background-color: #1557b0; }
+            QPushButton#SendButton:disabled { background-color: #444; color: #888; }
+            QPushButton#ClearButton { background-color: #2d2d2d; color: #ccc; border: 1px solid #444; border-radius: 12px; padding: 6px 12px; font-size: 12px; }
+            QPushButton#ClearButton:hover { background-color: #3d3d3d; }
+        """)
+        widget.setObjectName("ChatTab")
 
         filter_row = QHBoxLayout()
         self.chat_audio_combo = QComboBox()
-        filter_row.addWidget(QLabel("Chat scope"))
+        filter_label = QLabel("Chat scope:")
+        filter_label.setStyleSheet("font-weight: bold; color: #ccc; font-size: 13px;")
+        filter_row.addWidget(filter_label)
         filter_row.addWidget(self.chat_audio_combo, 1)
+
+        self.clear_chat_button = QPushButton("Clear Chat")
+        self.clear_chat_button.setObjectName("ClearButton")
+        self.clear_chat_button.clicked.connect(self._clear_chat)
+        filter_row.addWidget(self.clear_chat_button)
         layout.addLayout(filter_row)
 
-        self.chat_history = QPlainTextEdit()
-        self.chat_history.setReadOnly(True)
-        layout.addWidget(self.chat_history, 1)
+        self.chat_scroll = QScrollArea()
+        self.chat_scroll.setWidgetResizable(True)
+        self.chat_container = QWidget()
+        self.chat_container.setObjectName("ChatContainer")
+        self.chat_layout = QVBoxLayout(self.chat_container)
+        self.chat_layout.addStretch()
+        self.chat_layout.setSpacing(15)
+        self.chat_scroll.setWidget(self.chat_container)
+        layout.addWidget(self.chat_scroll, 1)
 
-        layout.addWidget(QLabel("Your question"))
+        input_layout = QHBoxLayout()
+        input_layout.setSpacing(10)
+        
         self.chat_input = QPlainTextEdit()
-        self.chat_input.setMaximumHeight(120)
-        layout.addWidget(self.chat_input)
+        self.chat_input.setObjectName("ChatInput")
+        self.chat_input.setPlaceholderText("Ask a question about the audios or documents...")
+        self.chat_input.setMaximumHeight(70)
+        input_layout.addWidget(self.chat_input, 1)
 
-        action_row = QHBoxLayout()
         self.send_chat_button = QPushButton("Send")
+        self.send_chat_button.setObjectName("SendButton")
         self.send_chat_button.clicked.connect(self._send_chat_message)
-        self.clear_chat_button = QPushButton("Clear Chat")
-        self.clear_chat_button.clicked.connect(self._clear_chat)
-        action_row.addWidget(self.send_chat_button)
-        action_row.addWidget(self.clear_chat_button)
-        layout.addLayout(action_row)
+        self.send_chat_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        input_layout.addWidget(self.send_chat_button)
+        input_layout.setAlignment(self.send_chat_button, Qt.AlignmentFlag.AlignBottom)
+        
+        layout.addLayout(input_layout)
 
-        layout.addWidget(QLabel("Retrieved sources"))
-        self.chat_sources = QPlainTextEdit()
-        self.chat_sources.setReadOnly(True)
-        self.chat_sources.setMaximumHeight(130)
-        layout.addWidget(self.chat_sources)
+        self.chat_sources_label = QLabel("")
+        self.chat_sources_label.setWordWrap(True)
+        self.chat_sources_label.setStyleSheet("color: #888; font-size: 11px;")
+        layout.addWidget(self.chat_sources_label)
 
         return widget
+
+    def _add_chat_bubble(self, text: str, is_user: bool) -> None:
+        bubble = QLabel(text)
+        bubble.setWordWrap(True)
+        bubble.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        
+        layout = QHBoxLayout()
+        if is_user:
+            bubble.setStyleSheet("""
+                background-color: #1a73e8; color: white; padding: 12px 18px;
+                border-radius: 18px; border-bottom-right-radius: 4px; font-size: 14px;
+            """)
+            layout.addStretch()
+            layout.addWidget(bubble)
+        else:
+            bubble.setStyleSheet("""
+                background-color: #2d2d2d; color: #e0e0e0; padding: 12px 18px;
+                border-radius: 18px; border-bottom-left-radius: 4px; font-size: 14px;
+            """)
+            layout.addWidget(bubble)
+            layout.addStretch()
+            
+        self.chat_layout.insertLayout(self.chat_layout.count() - 1, layout)
+        QTimer.singleShot(100, lambda: self.chat_scroll.verticalScrollBar().setValue(self.chat_scroll.verticalScrollBar().maximum()))
 
     def _run_async(
         self,
@@ -523,7 +580,7 @@ class MainWindow(QMainWindow):
             return
 
         audio_id = self._combo_audio_id(self.chat_audio_combo)
-        self.chat_history.appendPlainText(f"You: {question}\n")
+        self._add_chat_bubble(question, is_user=True)
         self.chat_input.clear()
 
         self.send_chat_button.setEnabled(False)
@@ -536,22 +593,36 @@ class MainWindow(QMainWindow):
             self.send_chat_button.setEnabled(True)
             answer = str(result.get("answer", ""))
             sources = result.get("sources", [])
-            source_lines = "\n".join(f"- {item}" for item in sources)
+            source_lines = " | ".join(f"{item}" for item in sources)
 
-            self.chat_history.appendPlainText(f"AI: {answer}\n")
-            self.chat_sources.setPlainText(source_lines)
+            self._add_chat_bubble(answer, is_user=False)
+            if source_lines:
+                self.chat_sources_label.setText(f"Sources: {source_lines}")
             self.statusBar().showMessage("AI response ready.")
 
         def on_error(message: str) -> None:
             self.send_chat_button.setEnabled(True)
-            self.chat_history.appendPlainText(f"AI: Error - {message}\n")
+            self._add_chat_bubble(f"Error - {message}", is_user=False)
             self._show_error(message)
 
         self._run_async(task, on_success, on_error)
 
     def _clear_chat(self) -> None:
-        self.chat_history.clear()
-        self.chat_sources.clear()
+        # Remove all widgets from the chat layout except the stretch
+        while self.chat_layout.count() > 1:
+            item = self.chat_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                # remove widgets within the layout
+                sub_layout = item.layout()
+                while sub_layout.count():
+                    sub_item = sub_layout.takeAt(0)
+                    if sub_item.widget():
+                        sub_item.widget().deleteLater()
+                sub_layout.deleteLater()
+        
+        self.chat_sources_label.clear()
 
     def _refresh_audio_combos(self) -> None:
         audios = self.database.list_audios()

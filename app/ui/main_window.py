@@ -41,24 +41,30 @@ from app.ui.workers import FunctionWorker
 
 
 # ── Palette ────────────────────────────────────────────────────────────────────
-BG0   = "#0d0e11"   # deepest
-BG1   = "#14161b"   # sidebar
-BG2   = "#1c1f27"   # cards / panels
-BG3   = "#242832"   # inputs / rows
-BORDER     = "rgba(255,255,255,0.07)"
-BORDER2    = "rgba(255,255,255,0.13)"
-TEXT       = "#e8eaf0"
-TEXT2      = "#8b8fa8"
-TEXT3      = "#555a70"
-ACCENT     = "#6b6ef9"
-ACCENT2    = "#8b8dfa"
-ACCENT_S   = "rgba(107,110,249,0.12)"
-ACCENT_G   = "rgba(107,110,249,0.25)"
-GREEN      = "#34d399"
-GREEN_S    = "rgba(52,211,153,0.10)"
-AMBER      = "#fbbf24"
-AMBER_S    = "rgba(251,191,36,0.10)"
-RED        = "#f87171"
+BG0   = "#0a0b0f"   # deepest — slightly cooler/darker for more contrast
+BG1   = "#111318"   # sidebar — more separation from BG0
+BG2   = "#1a1d26"   # cards / panels
+BG3   = "#22263200" # inputs / rows — more visible lift
+
+BORDER     = "rgba(255,255,255,0.11)"  # was 0.07 — nearly invisible, bumped up
+BORDER2    = "rgba(255,255,255,0.20)"  # was 0.13 — input/panel borders need this
+
+TEXT       = "#f0f2fa"   # slightly brighter primary text
+TEXT2      = "#c4c7dc"   # was #8b8fa8 — body text, much more readable
+TEXT3      = "#7a7f9a"   # was #555a70 — hints/meta, visible but clearly secondary
+
+ACCENT     = "#6b6ef9"   # unchanged — works well
+ACCENT2    = "#9091fb"   # slightly brighter for hover/active states
+ACCENT_S   = "rgba(107,110,249,0.15)"  # was 0.12
+ACCENT_G   = "rgba(107,110,249,0.30)"  # was 0.25
+
+GREEN      = "#2ecc8f"   # slightly more saturated
+GREEN_S    = "rgba(46,204,143,0.13)"
+
+AMBER      = "#f5a623"   # warmer amber, more distinct
+AMBER_S    = "rgba(245,166,35,0.12)"
+
+RED        = "#fc6b6b"   # slightly brighter red
 
 
 def css_border(color: str = BORDER) -> str:
@@ -481,6 +487,11 @@ class MainWindow(QMainWindow):
         self._documents_row_cache: dict[int, dict[str, Any]] = {}
         self._nav_items: list[NavItem] = []
 
+        self._audio_progress_value = 0
+        self._audio_progress_timer = QTimer(self)
+        self._audio_progress_timer.setInterval(140)
+        self._audio_progress_timer.timeout.connect(self._advance_audio_progress)
+
         self.setWindowTitle("OmniScribe")
         self.resize(1280, 820)
         self.setMinimumSize(960, 640)
@@ -712,7 +723,7 @@ class MainWindow(QMainWindow):
         # Topbar
         refresh_btn = StyledButton("Refresh")
         refresh_btn.clicked.connect(self._refresh_all)
-        upload_btn = StyledButton("+ Upload Audio", primary=True)
+        upload_btn = StyledButton("Transcribe", primary=True)
         upload_btn.clicked.connect(self._start_audio_pipeline)
         self.start_pipeline_button = upload_btn
         lay.addWidget(self._make_topbar("Audio & Transcripts", "upload → transcribe → review", [refresh_btn, upload_btn]))
@@ -815,15 +826,24 @@ class MainWindow(QMainWindow):
             f"color: {ACCENT2}; font-size: 12px; font-family: 'Courier New', monospace;"
         )
         self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 0)  # indeterminate
-        self.progress_bar.setFixedHeight(3)
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setFixedHeight(6)
         self.progress_bar.setTextVisible(False)
         self.progress_bar.setStyleSheet(
-            f"QProgressBar {{ background: {BG3}; border-radius: 2px; border: none; }}"
-            f"QProgressBar::chunk {{ background: {ACCENT}; border-radius: 2px; }}"
+            f"QProgressBar {{ background: {BG3}; border-radius: 99px; border: none; }}"
+            f"QProgressBar::chunk {{"
+            f"  border-radius: 99px;"
+            f"  background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {ACCENT}, stop:1 {ACCENT2});"
+            f"}}"
+        )
+        self.progress_percent_label = QLabel("0%")
+        self.progress_percent_label.setStyleSheet(
+            f"color: {ACCENT2}; font-size: 12px; font-family: 'Courier New', monospace;"
         )
         pw_lay.addWidget(self.progress_label, 1)
         pw_lay.addWidget(self.progress_bar, 2)
+        pw_lay.addWidget(self.progress_percent_label)
         self.progress_widget.hide()
         lay.addWidget(self.progress_widget)
 
@@ -1225,6 +1245,7 @@ class MainWindow(QMainWindow):
 
         self.start_pipeline_button.setEnabled(False)
         self.progress_widget.show()
+        self._start_audio_progress()
         self.statusBar().showMessage("Processing audio and transcription…")
 
         def task() -> dict[str, int]:
@@ -1235,7 +1256,7 @@ class MainWindow(QMainWindow):
 
         def on_success(result: dict[str, int]) -> None:
             self.start_pipeline_button.setEnabled(True)
-            self.progress_widget.hide()
+            self._finish_audio_progress(success=True)
             self._selected_audio_path = None
             self._selected_audio_documents = []
             self.audio_file_label.setText("No file selected")
@@ -1251,10 +1272,54 @@ class MainWindow(QMainWindow):
 
         def on_error(msg: str) -> None:
             self.start_pipeline_button.setEnabled(True)
-            self.progress_widget.hide()
+            self._finish_audio_progress(success=False)
             self._show_error(msg)
 
         self._run_async(task, on_success, on_error)
+
+    def _start_audio_progress(self) -> None:
+        self._audio_progress_value = 0
+        self.progress_bar.setValue(0)
+        self.progress_percent_label.setText("0%")
+        self.progress_label.setText("Preparing upload…")
+        self._audio_progress_timer.start()
+
+    def _advance_audio_progress(self) -> None:
+        value = self._audio_progress_value
+        if value < 35:
+            step = 5
+            status = "Uploading audio…"
+        elif value < 68:
+            step = 3
+            status = "Transcribing audio…"
+        elif value < 88:
+            step = 2
+            status = "Refining transcript…"
+        elif value < 95:
+            step = 1
+            status = "Finalizing and linking docs…"
+        else:
+            step = 0
+            status = "Finalizing and linking docs…"
+
+        self._audio_progress_value = min(95, value + step)
+        self.progress_bar.setValue(self._audio_progress_value)
+        self.progress_percent_label.setText(f"{self._audio_progress_value}%")
+        self.progress_label.setText(status)
+
+    def _finish_audio_progress(self, success: bool) -> None:
+        if self._audio_progress_timer.isActive():
+            self._audio_progress_timer.stop()
+
+        if success:
+            self._audio_progress_value = 100
+            self.progress_bar.setValue(100)
+            self.progress_percent_label.setText("100%")
+            self.progress_label.setText("Completed")
+            QTimer.singleShot(320, self.progress_widget.hide)
+        else:
+            self.progress_label.setText("Failed")
+            QTimer.singleShot(320, self.progress_widget.hide)
 
     def _upload_selected_documents(self) -> None:
         if not self._selected_document_paths:

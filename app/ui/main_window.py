@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Callable
 
 from PyQt6.QtCore import Qt, QThread, QTimer, QSize
 from PyQt6.QtGui import QCloseEvent, QColor, QPalette, QFont, QIcon
@@ -331,10 +331,18 @@ class UploadDropZone(QFrame):
 # ── Nav item ──────────────────────────────────────────────────────────────────
 
 class NavItem(QWidget):
-    def __init__(self, icon_text: str, label: str, badge: str = "", parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        icon_text: str,
+        label: str,
+        badge: str = "",
+        on_click: Callable[[NavItem], None] | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._active = False
+        self._on_click = on_click
 
         self._layout = QHBoxLayout(self)
         self._layout.setContentsMargins(10, 8, 10, 8)
@@ -394,7 +402,22 @@ class NavItem(QWidget):
 
     def mousePressEvent(self, event: Any) -> None:
         if event.button() == Qt.MouseButton.LeftButton:
-            self.parent().parent()._on_nav_click(self)  # type: ignore[attr-defined]
+            if self._on_click is not None:
+                self._on_click(self)
+                event.accept()
+                return
+
+            # Fallback for legacy usage: find a parent widget that handles nav clicks.
+            parent = self.parentWidget()
+            while parent is not None:
+                handler = getattr(parent, "_on_nav_click", None)
+                if callable(handler):
+                    handler(self)
+                    event.accept()
+                    return
+                parent = parent.parentWidget()
+
+        super().mousePressEvent(event)
 
 
 # ── Main Window ───────────────────────────────────────────────────────────────
@@ -532,7 +555,7 @@ class MainWindow(QMainWindow):
             ("💬", "AI Chat", ""),
         ]
         for icon, label, badge in items:
-            item = NavItem(icon, label, badge)
+            item = NavItem(icon, label, badge, on_click=self._on_nav_click)
             nav_lay.addWidget(item)
             self._nav_items.append(item)
 

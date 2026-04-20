@@ -443,15 +443,16 @@ class NavItem(QWidget):
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self._active = False
         self._on_click = on_click
+        self._token_icon = len(icon_text.strip()) > 1
 
         self._layout = QHBoxLayout(self)
         self._layout.setContentsMargins(10, 8, 10, 8)
         self._layout.setSpacing(10)
 
         self._icon = QLabel(icon_text)
-        self._icon.setFixedSize(18, 18)
+        self._icon.setFixedSize(30 if self._token_icon else 18, 18)
         self._icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self._icon.setStyleSheet(f"color: {TEXT2}; font-size: 14px; background: transparent; border: none;")
+        self._icon.setStyleSheet(self._icon_style(active=False))
 
         self._label = QLabel(label)
         self._label.setStyleSheet(f"color: {TEXT2}; font-size: 13px; background: transparent; border: none;")
@@ -471,13 +472,25 @@ class NavItem(QWidget):
 
         self._set_style(False)
 
+    def _icon_style(self, active: bool) -> str:
+        if self._token_icon:
+            fg = ACCENT2 if active else TEXT2
+            bg = ACCENT_G if active else BG3
+            return (
+                f"color: {fg}; background: {bg}; border: none; border-radius: 6px; "
+                f"font-size: 9px; font-family: 'Courier New', monospace; font-weight: 600;"
+            )
+
+        color = ACCENT2 if active else TEXT2
+        return f"color: {color}; font-size: 14px; background: transparent; border: none;"
+
     def _set_style(self, active: bool) -> None:
         if active:
             self.setStyleSheet(
                 f"QWidget {{ background: {ACCENT_S}; border: 1px solid {ACCENT_G}; border-radius: 10px; }}"
             )
             self._label.setStyleSheet(f"color: {ACCENT2}; font-size: 13px; background: transparent; border: none;")
-            self._icon.setStyleSheet(f"color: {ACCENT2}; font-size: 14px; background: transparent; border: none;")
+            self._icon.setStyleSheet(self._icon_style(active=True))
             if self._badge:
                 self._badge.setStyleSheet(
                     f"color: {ACCENT2}; background: {ACCENT_G}; border-radius: 99px; "
@@ -489,7 +502,7 @@ class NavItem(QWidget):
                 f"QWidget:hover {{ background: {BG2}; }}"
             )
             self._label.setStyleSheet(f"color: {TEXT2}; font-size: 13px; background: transparent; border: none;")
-            self._icon.setStyleSheet(f"color: {TEXT2}; font-size: 14px; background: transparent; border: none;")
+            self._icon.setStyleSheet(self._icon_style(active=False))
             if self._badge:
                 self._badge.setStyleSheet(
                     f"color: {TEXT3}; background: {BG3}; border-radius: 99px; "
@@ -670,9 +683,9 @@ class MainWindow(QMainWindow):
 
         items = [
             ("♪", "Audio", "3"),
-            ("📄", "Documents", "7"),
-            ("✏", "Notes", ""),
-            ("💬", "AI Chat", ""),
+            ("🗎", "Documents", "7"),
+            ("📋", "Notes", ""),
+            ("🗫", "AI Chat", ""),
         ]
         for icon, label, badge in items:
             item = NavItem(icon, label, badge, on_click=self._on_nav_click)
@@ -1421,21 +1434,16 @@ class MainWindow(QMainWindow):
 
     def _advance_audio_progress(self) -> None:
         value = self._audio_progress_value
-        if value < 35:
+        if value < 75:
             step = 5
             status = "Uploading audio…"
-        elif value < 68:
+        elif value < 97:
             step = 3
             status = "Transcribing audio…"
-        elif value < 88:
+        else:
             step = 2
             status = "Refining transcript…"
-        elif value < 95:
-            step = 1
-            status = "Finalizing…"
-        else:
-            step = 0
-            status = "Finalizing…"
+
 
         self._audio_progress_value = min(95, value + step)
         self.progress_bar.setValue(self._audio_progress_value)

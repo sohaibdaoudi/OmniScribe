@@ -1,11 +1,22 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 from app.ui.workers import TranscriptionWorker
 
-from PyQt6.QtCore import Qt, QThread, QTimer, QSize, QPointF, pyqtSignal, QElapsedTimer
+from PyQt6.QtCore import (
+    Qt,
+    QThread,
+    QTimer,
+    QSize,
+    QPointF,
+    pyqtSignal,
+    QElapsedTimer,
+    QUrl,
+)
 from PyQt6.QtGui import QCloseEvent, QColor, QPalette, QFont, QIcon, QPainter, QPen
+from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+from PyQt6.QtMultimediaWidgets import QVideoWidget
 from PyQt6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
@@ -31,6 +42,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QTextEdit,
     QHeaderView,
+    QSlider,
 )
 
 
@@ -600,6 +612,13 @@ class MainWindow(QMainWindow):
         self.rag_service = rag_service
         self.api_status_service = api_status_service
 
+        # Audio player references
+        self.audio_player = None
+        self.audio_output = None
+        self.play_pause_btn = None
+        self.position_slider = None
+        self.time_label_player = None
+
         self._active_workers: list[tuple[QThread, FunctionWorker]] = []
 
         # UX decision: one audio per transcription job (clear mapping), multiple docs as attachments.
@@ -936,13 +955,15 @@ class MainWindow(QMainWindow):
             )
         )
 
-        # Sub-tabs
-        sub_stack = QStackedWidget()
-        sub_stack.setStyleSheet(f"background: {BG0};")
-        sub_stack.addWidget(self._build_audio_upload_sub())
-        sub_stack.addWidget(self._build_audio_transcripts_sub())
-        lay.addWidget(self._make_subtab_bar(["Upload", "Transcripts"], sub_stack))
-        lay.addWidget(sub_stack, 1)
+        # Sub-tabs (store reference for later switching)
+        self.audio_sub_stack = QStackedWidget()
+        self.audio_sub_stack.setStyleSheet(f"background: {BG0};")
+        self.audio_sub_stack.addWidget(self._build_audio_upload_sub())
+        self.audio_sub_stack.addWidget(self._build_audio_transcripts_sub())
+        lay.addWidget(
+            self._make_subtab_bar(["Upload", "Transcripts"], self.audio_sub_stack)
+        )
+        lay.addWidget(self.audio_sub_stack, 1)
         return page
 
     def _build_audio_upload_sub(self) -> QWidget:
@@ -1077,7 +1098,7 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(24, 18, 24, 18)
         lay.setSpacing(14)
 
-        # Selector
+        # Selector row
         selector_row = QHBoxLayout()
         selector_row.setSpacing(10)
         lbl = QLabel("Session")
@@ -1093,7 +1114,52 @@ class MainWindow(QMainWindow):
         selector_row.addWidget(self.audio_selector_combo, 1)
         lay.addLayout(selector_row)
 
-        # Two panels
+        # --- NEW: Audio player widget ---
+        player_widget = QWidget()
+        player_widget.setStyleSheet(f"background: {BG2}; border-radius: 12px;")
+        player_layout = QHBoxLayout(player_widget)
+        player_layout.setContentsMargins(12, 8, 12, 8)
+
+        self.play_pause_btn = QPushButton("▶")
+        self.play_pause_btn.setFixedSize(32, 32)
+        self.play_pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.play_pause_btn.setEnabled(False)
+        self.play_pause_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {ACCENT}; color: white; border: none; border-radius: 16px;
+                font-size: 14px;
+            }}
+            QPushButton:hover {{ background: {ACCENT2}; }}
+            QPushButton:disabled {{ background: {BG3}; color: {TEXT3}; }}
+        """)
+        self.play_pause_btn.clicked.connect(self._toggle_audio_playback)
+
+        self.position_slider = QSlider(Qt.Orientation.Horizontal)
+        self.position_slider.setRange(0, 1000)
+        self.position_slider.setEnabled(False)
+        self.position_slider.sliderMoved.connect(self._seek_audio)
+
+        self.time_label_player = QLabel("00:00 / 00:00")
+        self.time_label_player.setStyleSheet(
+            f"color: {TEXT3}; font-size: 11px; font-family: 'Courier New', monospace;"
+        )
+
+        player_layout.addWidget(self.play_pause_btn)
+        player_layout.addWidget(self.position_slider, 1)
+        player_layout.addWidget(self.time_label_player)
+
+        lay.addWidget(player_widget)
+
+        # Initialize media player
+        self.audio_output = QAudioOutput()
+        self.audio_player = QMediaPlayer()
+        self.audio_player.setAudioOutput(self.audio_output)
+        self.audio_player.errorOccurred.connect(self._handle_player_error)
+        self.audio_player.positionChanged.connect(self._update_position)
+        self.audio_player.durationChanged.connect(self._update_duration)
+        self.audio_player.playbackStateChanged.connect(self._update_play_button)
+
+        # Two panels row
         panels_row = QHBoxLayout()
         panels_row.setSpacing(14)
 
@@ -1615,6 +1681,14 @@ class MainWindow(QMainWindow):
         self._refresh_attachment_views()
         self._refresh_all()
 
+        # Switch to Transcripts sub-tab and select the new audio
+        if hasattr(self, "audio_sub_stack"):
+            self.audio_sub_stack.setCurrentIndex(1)  # index 1 = Transcripts
+        # Select the newly created audio in the combo
+        index = self.audio_selector_combo.findData(audio_id)
+        if index >= 0:
+            self.audio_selector_combo.setCurrentIndex(index)
+
         self.statusBar().showMessage("Audio processed.")
         QMessageBox.information(
             self,
@@ -1934,6 +2008,7 @@ class MainWindow(QMainWindow):
         if audio_id is None:
             self.raw_transcript_text.clear()
             self.corrected_transcript_text.clear()
+            self._update_player_for_selected_audio(None)
             return
 
         transcript = self.database.get_transcript_by_audio(audio_id)
@@ -1942,12 +2017,98 @@ class MainWindow(QMainWindow):
             self.corrected_transcript_text.setPlainText(
                 "No corrected transcript available yet."
             )
+        else:
+            self.raw_transcript_text.setPlainText(str(transcript.get("raw_text", "")))
+            self.corrected_transcript_text.setPlainText(
+                str(transcript.get("corrected_text", ""))
+            )
+
+        self._update_player_for_selected_audio(audio_id)
+
+    # Player control methods
+    def _update_player_for_selected_audio(self, audio_id: Optional[int]) -> None:
+        if audio_id is None:
+            self.play_pause_btn.setEnabled(False)
+            self.position_slider.setEnabled(False)
+            self.time_label_player.setText("00:00 / 00:00")
+            if (
+                self.audio_player.playbackState()
+                != QMediaPlayer.PlaybackState.StoppedState
+            ):
+                self.audio_player.stop()
             return
 
-        self.raw_transcript_text.setPlainText(str(transcript.get("raw_text", "")))
-        self.corrected_transcript_text.setPlainText(
-            str(transcript.get("corrected_text", ""))
-        )
+        # Get stored_path from database
+        with self.database._connect() as conn:
+            row = conn.execute(
+                "SELECT stored_path FROM audios WHERE id = ?", (audio_id,)
+            ).fetchone()
+        if not row:
+            self.play_pause_btn.setEnabled(False)
+            self.position_slider.setEnabled(False)
+            self.time_label_player.setText("File missing")
+            return
+
+        stored_path = row["stored_path"]
+        if not Path(stored_path).exists():
+            self.play_pause_btn.setEnabled(False)
+            self.position_slider.setEnabled(False)
+            self.time_label_player.setText("File missing")
+            return
+
+        # Stop current playback and load new source
+        self.audio_player.stop()
+        self.audio_player.setSource(QUrl.fromLocalFile(stored_path))
+        self.play_pause_btn.setEnabled(True)
+        self.position_slider.setEnabled(True)
+        self.position_slider.setValue(0)
+        self.time_label_player.setText("00:00 / 00:00")
+
+    def _toggle_audio_playback(self) -> None:
+        if self.audio_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self.audio_player.pause()
+        else:
+            self.audio_player.play()
+
+    def _seek_audio(self, position: int) -> None:
+        duration = self.audio_player.duration()
+        if duration > 0:
+            self.audio_player.setPosition(int(position / 1000.0 * duration))
+
+    def _update_position(self, position: int) -> None:
+        if not self.position_slider.isSliderDown():
+            duration = self.audio_player.duration()
+            if duration > 0:
+                self.position_slider.setValue(int(position / duration * 1000))
+        # Update time label
+        pos_secs = position // 1000
+        dur_secs = self.audio_player.duration() // 1000
+        pos_str = f"{pos_secs//60:02d}:{pos_secs%60:02d}"
+        dur_str = f"{dur_secs//60:02d}:{dur_secs%60:02d}"
+        self.time_label_player.setText(f"{pos_str} / {dur_str}")
+
+    def _update_duration(self, duration: int) -> None:
+        if duration > 0:
+            dur_secs = duration // 1000
+            dur_str = f"{dur_secs//60:02d}:{dur_secs%60:02d}"
+            pos_secs = self.audio_player.position() // 1000
+            pos_str = f"{pos_secs//60:02d}:{pos_secs%60:02d}"
+            self.time_label_player.setText(f"{pos_str} / {dur_str}")
+
+    def _update_play_button(self, state: QMediaPlayer.PlaybackState) -> None:
+        if state == QMediaPlayer.PlaybackState.PlayingState:
+            self.play_pause_btn.setText("⏸")
+        else:
+            self.play_pause_btn.setText("▶")
+
+    def _handle_player_error(
+        self, error: QMediaPlayer.Error, error_string: str
+    ) -> None:
+        if error != QMediaPlayer.Error.NoError:
+            self.play_pause_btn.setEnabled(False)
+            self.position_slider.setEnabled(False)
+            self.time_label_player.setText("Error")
+            QMessageBox.warning(self, "Media Player Error", error_string)
 
     def _refresh_documents_table(self) -> None:
         documents = self.database.list_documents()
@@ -2105,6 +2266,9 @@ class MainWindow(QMainWindow):
             self._spinner_timer.stop()
         if self._time_update_timer and self._time_update_timer.isActive():
             self._time_update_timer.stop()
+        # Stop media player
+        if self.audio_player:
+            self.audio_player.stop()
         for thread, _ in list(self._active_workers):
             thread.quit()
             thread.wait(2000)

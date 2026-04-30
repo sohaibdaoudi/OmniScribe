@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Callable
+from app.ui.workers import TranscriptionWorker
 
-from PyQt6.QtCore import Qt, QThread, QTimer, QSize, QPointF, pyqtSignal
+from PyQt6.QtCore import Qt, QThread, QTimer, QSize, QPointF, pyqtSignal, QElapsedTimer
 from PyQt6.QtGui import QCloseEvent, QColor, QPalette, QFont, QIcon, QPainter, QPen
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -32,41 +33,45 @@ from PyQt6.QtWidgets import (
     QHeaderView,
 )
 
+
 from app.database import Database
 from app.services.api_status_service import ApiHealthStatus, ApiStatusService
 from app.services.document_service import DocumentService
-from app.services.notes_service import NOTE_MODE_EXACT, NOTE_MODE_REFORMULATED, NotesService
+from app.services.notes_service import (
+    NOTE_MODE_EXACT,
+    NOTE_MODE_REFORMULATED,
+    NotesService,
+)
 from app.services.rag_service import RagService
 from app.services.transcription_service import TranscriptionService
 from app.ui.workers import FunctionWorker
 
-
 # ── Palette ────────────────────────────────────────────────────────────────────
-BG0   = "#0a0b0f"   # deepest — slightly cooler/darker for more contrast
-BG1   = "#111318"   # sidebar — more separation from BG0
-BG2   = "#1a1d26"   # cards / panels
-BG3   = "#22263200" # inputs / rows — more visible lift
+BG0 = "#0a0b0f"  # deepest — slightly cooler/darker for more contrast
+BG1 = "#111318"  # sidebar — more separation from BG0
+BG2 = "#1a1d26"  # cards / panels
+BG3 = "#22263200"  # inputs / rows — more visible lift
 
-BORDER     = "rgba(255,255,255,0.11)"  # was 0.07 — nearly invisible, bumped up
-BORDER2    = "rgba(255,255,255,0.20)"  # was 0.13 — input/panel borders need this
+BORDER = "rgba(255,255,255,0.11)"  # was 0.07 — nearly invisible, bumped up
+BORDER2 = "rgba(255,255,255,0.20)"  # was 0.13 — input/panel borders need this
 
-TEXT       = "#f0f2fa"   # slightly brighter primary text
-TEXT2      = "#c4c7dc"   # was #8b8fa8 — body text, much more readable
-TEXT3      = "#7a7f9a"   # was #555a70 — hints/meta, visible but clearly secondary
+TEXT = "#f0f2fa"  # slightly brighter primary text
+TEXT2 = "#c4c7dc"  # was #8b8fa8 — body text, much more readable
+TEXT3 = "#7a7f9a"  # was #555a70 — hints/meta, visible but clearly secondary
 
-ACCENT     = "#6b6ef9"   # unchanged — works well
-ACCENT2    = "#9091fb"   # slightly brighter for hover/active states
-ACCENT_S   = "rgba(107,110,249,0.15)"  # was 0.12
-ACCENT_G   = "rgba(107,110,249,0.30)"  # was 0.25
+ACCENT = "#6b6ef9"  # unchanged — works well
+ACCENT2 = "#9091fb"  # slightly brighter for hover/active states
+ACCENT_S = "rgba(107,110,249,0.15)"  # was 0.12
+ACCENT_G = "rgba(107,110,249,0.30)"  # was 0.25
 
-GREEN      = "#2ecc8f"   # slightly more saturated
-GREEN_S    = "rgba(46,204,143,0.13)"
+GREEN = "#2ecc8f"  # slightly more saturated
+GREEN_S = "rgba(46,204,143,0.13)"
 
-AMBER      = "#f5a623"   # warmer amber, more distinct
-AMBER_S    = "rgba(245,166,35,0.12)"
+AMBER = "#f5a623"  # warmer amber, more distinct
+AMBER_S = "rgba(245,166,35,0.12)"
 
-RED        = "#fc6b6b"   # slightly brighter red
-RED_S      = "rgba(252,107,107,0.13)"
+RED = "#fc6b6b"  # slightly brighter red
+RED_S = "rgba(252,107,107,0.13)"
 
 
 def css_border(color: str = BORDER) -> str:
@@ -75,10 +80,13 @@ def css_border(color: str = BORDER) -> str:
 
 # ── Reusable styled widgets ────────────────────────────────────────────────────
 
+
 class StyledButton(QPushButton):
     """Primary (filled) or ghost (outlined) push button."""
 
-    def __init__(self, text: str, primary: bool = False, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, text: str, primary: bool = False, parent: QWidget | None = None
+    ) -> None:
         super().__init__(text, parent)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         radius = "10px"
@@ -157,9 +165,13 @@ class StyledCombo(QComboBox):
 class MonoLabel(QLabel):
     """Small monospace metadata label."""
 
-    def __init__(self, text: str = "", color: str = TEXT3, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, text: str = "", color: str = TEXT3, parent: QWidget | None = None
+    ) -> None:
         super().__init__(text, parent)
-        self.setStyleSheet(f"color: {color}; font-family: 'Courier New', monospace; font-size: 11px;")
+        self.setStyleSheet(
+            f"color: {color}; font-family: 'Courier New', monospace; font-size: 11px;"
+        )
 
 
 class SectionLabel(QLabel):
@@ -178,7 +190,9 @@ class AttachmentChip(QFrame):
 
     remove_requested = pyqtSignal(str)
 
-    def __init__(self, file_path: str, kind: str, parent: QWidget | None = None) -> None:
+    def __init__(
+        self, file_path: str, kind: str, parent: QWidget | None = None
+    ) -> None:
         super().__init__(parent)
         self.file_path = file_path
         self.kind = kind
@@ -247,7 +261,13 @@ class Card(QFrame):
 class PanelFrame(QFrame):
     """Panel with header stripe and body."""
 
-    def __init__(self, title: str, tag: str = "", tag_live: bool = False, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        title: str,
+        tag: str = "",
+        tag_live: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setStyleSheet(f"""
             QFrame#panel {{
@@ -264,7 +284,9 @@ class PanelFrame(QFrame):
 
         # header
         header = QWidget()
-        header.setStyleSheet(f"background: transparent; border-bottom: 1px solid {BORDER};")
+        header.setStyleSheet(
+            f"background: transparent; border-bottom: 1px solid {BORDER};"
+        )
         hlay = QHBoxLayout(header)
         hlay.setContentsMargins(16, 10, 16, 10)
 
@@ -273,9 +295,9 @@ class PanelFrame(QFrame):
         hlay.addStretch()
 
         if tag:
-            tag_bg   = GREEN_S if tag_live else BG3
-            tag_col  = GREEN   if tag_live else TEXT3
-            tag_lbl  = MonoLabel(tag, tag_col)
+            tag_bg = GREEN_S if tag_live else BG3
+            tag_col = GREEN if tag_live else TEXT3
+            tag_lbl = MonoLabel(tag, tag_col)
             tag_lbl.setStyleSheet(
                 f"color: {tag_col}; background: {tag_bg}; "
                 f"border-radius: 99px; padding: 2px 9px; font-size: 10px;"
@@ -334,7 +356,14 @@ class UploadIcon(QWidget):
 
 
 class UploadDropZone(QFrame):
-    def __init__(self, title: str, subtitle: str, formats: list[str] | None = None, compact: bool = False, parent: QWidget | None = None) -> None:
+    def __init__(
+        self,
+        title: str,
+        subtitle: str,
+        formats: list[str] | None = None,
+        compact: bool = False,
+        parent: QWidget | None = None,
+    ) -> None:
         super().__init__(parent)
         self.setAcceptDrops(True)
         self._normal_style = f"""
@@ -368,9 +397,13 @@ class UploadDropZone(QFrame):
 
             text_col = QVBoxLayout()
             t = QLabel(title)
-            t.setStyleSheet(f"color: {TEXT}; font-size: 13px; font-weight: 600; border: none; background: transparent;")
+            t.setStyleSheet(
+                f"color: {TEXT}; font-size: 13px; font-weight: 600; border: none; background: transparent;"
+            )
             s = QLabel(subtitle)
-            s.setStyleSheet(f"color: {TEXT3}; font-size: 11px; border: none; background: transparent;")
+            s.setStyleSheet(
+                f"color: {TEXT3}; font-size: 11px; border: none; background: transparent;"
+            )
             text_col.addWidget(t)
             text_col.addWidget(s)
             row.addLayout(text_col)
@@ -386,12 +419,16 @@ class UploadDropZone(QFrame):
             lay.addSpacing(14)
 
             t = QLabel(title)
-            t.setStyleSheet(f"color: {TEXT}; font-size: 14px; font-weight: 600; border: none; background: transparent;")
+            t.setStyleSheet(
+                f"color: {TEXT}; font-size: 14px; font-weight: 600; border: none; background: transparent;"
+            )
             t.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lay.addWidget(t)
 
             s = QLabel(subtitle)
-            s.setStyleSheet(f"color: {TEXT3}; font-size: 12px; border: none; background: transparent;")
+            s.setStyleSheet(
+                f"color: {TEXT3}; font-size: 12px; border: none; background: transparent;"
+            )
             s.setAlignment(Qt.AlignmentFlag.AlignCenter)
             lay.addWidget(s)
 
@@ -430,6 +467,7 @@ class UploadDropZone(QFrame):
 
 # ── Nav item ──────────────────────────────────────────────────────────────────
 
+
 class NavItem(QWidget):
     def __init__(
         self,
@@ -455,7 +493,9 @@ class NavItem(QWidget):
         self._icon.setStyleSheet(self._icon_style(active=False))
 
         self._label = QLabel(label)
-        self._label.setStyleSheet(f"color: {TEXT2}; font-size: 13px; background: transparent; border: none;")
+        self._label.setStyleSheet(
+            f"color: {TEXT2}; font-size: 13px; background: transparent; border: none;"
+        )
 
         self._layout.addWidget(self._icon)
         self._layout.addWidget(self._label, 1)
@@ -482,14 +522,18 @@ class NavItem(QWidget):
             )
 
         color = ACCENT2 if active else TEXT2
-        return f"color: {color}; font-size: 14px; background: transparent; border: none;"
+        return (
+            f"color: {color}; font-size: 14px; background: transparent; border: none;"
+        )
 
     def _set_style(self, active: bool) -> None:
         if active:
             self.setStyleSheet(
                 f"QWidget {{ background: {ACCENT_S}; border: 1px solid {ACCENT_G}; border-radius: 10px; }}"
             )
-            self._label.setStyleSheet(f"color: {ACCENT2}; font-size: 13px; background: transparent; border: none;")
+            self._label.setStyleSheet(
+                f"color: {ACCENT2}; font-size: 13px; background: transparent; border: none;"
+            )
             self._icon.setStyleSheet(self._icon_style(active=True))
             if self._badge:
                 self._badge.setStyleSheet(
@@ -501,7 +545,9 @@ class NavItem(QWidget):
                 f"QWidget {{ background: transparent; border: 1px solid transparent; border-radius: 10px; }}"
                 f"QWidget:hover {{ background: {BG2}; }}"
             )
-            self._label.setStyleSheet(f"color: {TEXT2}; font-size: 13px; background: transparent; border: none;")
+            self._label.setStyleSheet(
+                f"color: {TEXT2}; font-size: 13px; background: transparent; border: none;"
+            )
             self._icon.setStyleSheet(self._icon_style(active=False))
             if self._badge:
                 self._badge.setStyleSheet(
@@ -535,6 +581,7 @@ class NavItem(QWidget):
 
 # ── Main Window ───────────────────────────────────────────────────────────────
 
+
 class MainWindow(QMainWindow):
     def __init__(
         self,
@@ -564,10 +611,12 @@ class MainWindow(QMainWindow):
         self._documents_row_cache: dict[int, dict[str, Any]] = {}
         self._nav_items: list[NavItem] = []
 
-        self._audio_progress_value = 0
-        self._audio_progress_timer = QTimer(self)
-        self._audio_progress_timer.setInterval(140)
-        self._audio_progress_timer.timeout.connect(self._advance_audio_progress)
+        # New spinner and real progress timers
+        self._spinner_timer = None
+        self._time_update_timer = None
+        self._stage_elapsed_timer = None
+        self._spinner_frames = ["◐", "◓", "◑", "◒"]
+        self._spinner_index = 0
 
         self._api_status_check_inflight = False
         self._api_status_timer = QTimer(self)
@@ -578,7 +627,7 @@ class MainWindow(QMainWindow):
         self.resize(1280, 820)
         self.setMinimumSize(960, 640)
 
-        # Global app style
+        # Global app style (unchanged)
         self.setStyleSheet(f"""
             QMainWindow {{ background: {BG0}; }}
             QWidget {{ background: {BG0}; color: {TEXT}; font-family: 'Segoe UI', 'SF Pro Display', sans-serif; }}
@@ -624,10 +673,10 @@ class MainWindow(QMainWindow):
 
         self.stack = QStackedWidget()
         self.stack.setStyleSheet(f"background: {BG0};")
-        self.stack.addWidget(self._build_audio_page())    # 0
-        self.stack.addWidget(self._build_documents_page()) # 1
-        self.stack.addWidget(self._build_notes_page())    # 2
-        self.stack.addWidget(self._build_chat_page())     # 3
+        self.stack.addWidget(self._build_audio_page())  # 0
+        self.stack.addWidget(self._build_documents_page())  # 1
+        self.stack.addWidget(self._build_notes_page())  # 2
+        self.stack.addWidget(self._build_chat_page())  # 3
         root_layout.addWidget(self.stack, 1)
 
         self.setCentralWidget(root)
@@ -644,7 +693,9 @@ class MainWindow(QMainWindow):
 
         # Logo
         logo_widget = QWidget()
-        logo_widget.setStyleSheet(f"background: transparent; border-bottom: 1px solid {BORDER};")
+        logo_widget.setStyleSheet(
+            f"background: transparent; border-bottom: 1px solid {BORDER};"
+        )
         logo_lay = QHBoxLayout(logo_widget)
         logo_lay.setContentsMargins(18, 18, 18, 16)
         logo_lay.setSpacing(10)
@@ -663,7 +714,9 @@ class MainWindow(QMainWindow):
         lt_lay.setContentsMargins(0, 0, 0, 0)
         lt_lay.setSpacing(1)
         name_lbl = QLabel("OmniScribe")
-        name_lbl.setStyleSheet(f"color: {TEXT}; font-size: 15px; font-weight: 700; background: transparent; border: none;")
+        name_lbl.setStyleSheet(
+            f"color: {TEXT}; font-size: 15px; font-weight: 700; background: transparent; border: none;"
+        )
         tag_lbl = MonoLabel("v0.1 MVP")
         lt_lay.addWidget(name_lbl)
         lt_lay.addWidget(tag_lbl)
@@ -697,7 +750,9 @@ class MainWindow(QMainWindow):
 
         # Footer status
         footer = QWidget()
-        footer.setStyleSheet(f"background: transparent; border-top: 1px solid {BORDER};")
+        footer.setStyleSheet(
+            f"background: transparent; border-top: 1px solid {BORDER};"
+        )
         f_lay = QVBoxLayout(footer)
         f_lay.setContentsMargins(10, 12, 10, 12)
 
@@ -710,7 +765,9 @@ class MainWindow(QMainWindow):
 
         dot = QLabel("●")
         self.api_status_dot = dot
-        dot.setStyleSheet(f"color: {AMBER}; font-size: 10px; background: transparent; border: none;")
+        dot.setStyleSheet(
+            f"color: {AMBER}; font-size: 10px; background: transparent; border: none;"
+        )
         status_text = MonoLabel("Connecting...", AMBER)
         self.api_status_text = status_text
         sp_lay.addWidget(dot)
@@ -729,7 +786,9 @@ class MainWindow(QMainWindow):
                 self.stack.setCurrentIndex(i)
 
     def _setup_api_status_checks(self) -> None:
-        self._apply_api_status(ApiHealthStatus(state="loading", message="Connecting..."))
+        self._apply_api_status(
+            ApiHealthStatus(state="loading", message="Connecting...")
+        )
         self._check_api_health()
         self._api_status_timer.start()
 
@@ -738,7 +797,9 @@ class MainWindow(QMainWindow):
             return
 
         self._api_status_check_inflight = True
-        self._apply_api_status(ApiHealthStatus(state="loading", message="Connecting..."))
+        self._apply_api_status(
+            ApiHealthStatus(state="loading", message="Connecting...")
+        )
 
         def task() -> ApiHealthStatus:
             return self.api_status_service.check_health()
@@ -749,7 +810,9 @@ class MainWindow(QMainWindow):
 
         def on_error(message: str) -> None:
             self._api_status_check_inflight = False
-            self._apply_api_status(ApiHealthStatus(state="error", message=f"API unavailable: {message}"))
+            self._apply_api_status(
+                ApiHealthStatus(state="error", message=f"API unavailable: {message}")
+            )
 
         self._run_async(task, on_success, on_error)
 
@@ -767,7 +830,9 @@ class MainWindow(QMainWindow):
             dot_color = RED
             text_color = RED
 
-        self.api_status_pill.setStyleSheet(f"background: {pill_bg}; border-radius: 10px;")
+        self.api_status_pill.setStyleSheet(
+            f"background: {pill_bg}; border-radius: 10px;"
+        )
         self.api_status_dot.setStyleSheet(
             f"color: {dot_color}; font-size: 10px; background: transparent; border: none;"
         )
@@ -778,7 +843,9 @@ class MainWindow(QMainWindow):
 
     # ── Topbar helper ────────────────────────────────────────────────────────
 
-    def _make_topbar(self, title: str, subtitle: str, actions: list[QWidget]) -> QWidget:
+    def _make_topbar(
+        self, title: str, subtitle: str, actions: list[QWidget]
+    ) -> QWidget:
         bar = QWidget()
         bar.setFixedHeight(60)
         bar.setStyleSheet(f"background: {BG0}; border-bottom: 1px solid {BORDER};")
@@ -791,7 +858,9 @@ class MainWindow(QMainWindow):
         tc_lay.setContentsMargins(0, 0, 0, 0)
         tc_lay.setSpacing(2)
         title_lbl = QLabel(title)
-        title_lbl.setStyleSheet(f"color: {TEXT}; font-size: 15px; font-weight: 700; background: transparent; border: none;")
+        title_lbl.setStyleSheet(
+            f"color: {TEXT}; font-size: 15px; font-weight: 700; background: transparent; border: none;"
+        )
         sub_lbl = MonoLabel(subtitle)
         tc_lay.addWidget(title_lbl)
         tc_lay.addWidget(sub_lbl)
@@ -859,7 +928,13 @@ class MainWindow(QMainWindow):
         upload_btn = StyledButton("Transcribe", primary=True)
         upload_btn.clicked.connect(self._start_audio_pipeline)
         self.start_pipeline_button = upload_btn
-        lay.addWidget(self._make_topbar("Audio & Transcripts", "upload → transcribe → review", [refresh_btn, upload_btn]))
+        lay.addWidget(
+            self._make_topbar(
+                "Audio & Transcripts",
+                "upload → transcribe → review",
+                [refresh_btn, upload_btn],
+            )
+        )
 
         # Sub-tabs
         sub_stack = QStackedWidget()
@@ -891,7 +966,9 @@ class MainWindow(QMainWindow):
         lay.addWidget(self.audio_drop_zone)
 
         self.audio_attachments_box = QWidget()
-        self.audio_attachments_box.setStyleSheet("background: transparent; border: none;")
+        self.audio_attachments_box.setStyleSheet(
+            "background: transparent; border: none;"
+        )
         self.audio_attachments_layout = QVBoxLayout(self.audio_attachments_box)
         self.audio_attachments_layout.setContentsMargins(0, 0, 0, 0)
         self.audio_attachments_layout.setSpacing(6)
@@ -904,7 +981,9 @@ class MainWindow(QMainWindow):
         ts_lay.setContentsMargins(0, 0, 0, 0)
         ts_lay.setSpacing(6)
         ts_lay.addWidget(SectionLabel("Lecture Title"))
-        self.audio_title_input = StyledInput("e.g. Introduction to Machine Learning — Lecture 3")
+        self.audio_title_input = StyledInput(
+            "e.g. Introduction to Machine Learning — Lecture 3"
+        )
         ts_lay.addWidget(self.audio_title_input)
         lay.addWidget(title_section)
 
@@ -943,14 +1022,18 @@ class MainWindow(QMainWindow):
         ds_lay.addWidget(docs_drop)
 
         self.audio_docs_attachments_box = QWidget()
-        self.audio_docs_attachments_box.setStyleSheet("background: transparent; border: none;")
-        self.audio_docs_attachments_layout = QVBoxLayout(self.audio_docs_attachments_box)
+        self.audio_docs_attachments_box.setStyleSheet(
+            "background: transparent; border: none;"
+        )
+        self.audio_docs_attachments_layout = QVBoxLayout(
+            self.audio_docs_attachments_box
+        )
         self.audio_docs_attachments_layout.setContentsMargins(0, 0, 0, 0)
         self.audio_docs_attachments_layout.setSpacing(6)
         ds_lay.addWidget(self.audio_docs_attachments_box)
         lay.addWidget(docs_section)
 
-        # Progress bar (hidden by default)
+        # Progress widget (spinner + stage + elapsed time)
         self.progress_widget = QWidget()
         self.progress_widget.setStyleSheet(
             f"background: {ACCENT_S}; border: 1px solid {ACCENT_G}; border-radius: 10px;"
@@ -958,29 +1041,28 @@ class MainWindow(QMainWindow):
         pw_lay = QHBoxLayout(self.progress_widget)
         pw_lay.setContentsMargins(14, 10, 14, 10)
         pw_lay.setSpacing(12)
-        self.progress_label = QLabel("Transcribing audio…")
-        self.progress_label.setStyleSheet(
+
+        self.spinner_label = QLabel("◐")
+        self.spinner_label.setStyleSheet(
+            f"color: {ACCENT2}; font-size: 16px; font-family: monospace;"
+        )
+        self.spinner_label.setFixedWidth(20)
+
+        self.stage_label = QLabel("Preparing…")
+        self.stage_label.setStyleSheet(
             f"color: {ACCENT2}; font-size: 12px; font-family: 'Courier New', monospace;"
         )
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setFixedHeight(6)
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setStyleSheet(
-            f"QProgressBar {{ background: {BG3}; border-radius: 99px; border: none; }}"
-            f"QProgressBar::chunk {{"
-            f"  border-radius: 99px;"
-            f"  background: qlineargradient(x1:0, y1:0, x2:1, y2:0, stop:0 {ACCENT}, stop:1 {ACCENT2});"
-            f"}}"
-        )
-        self.progress_percent_label = QLabel("0%")
-        self.progress_percent_label.setStyleSheet(
+
+        self.time_label = QLabel("0.0s")
+        self.time_label.setStyleSheet(
             f"color: {ACCENT2}; font-size: 12px; font-family: 'Courier New', monospace;"
         )
-        pw_lay.addWidget(self.progress_label, 1)
-        pw_lay.addWidget(self.progress_bar, 2)
-        pw_lay.addWidget(self.progress_percent_label)
+        self.time_label.setFixedWidth(50)
+
+        pw_lay.addWidget(self.spinner_label)
+        pw_lay.addWidget(self.stage_label, 1)
+        pw_lay.addWidget(self.time_label)
+
         self.progress_widget.hide()
         lay.addWidget(self.progress_widget)
 
@@ -1001,8 +1083,12 @@ class MainWindow(QMainWindow):
         lbl = QLabel("Session")
         lbl.setStyleSheet(f"color: {TEXT2}; font-size: 13px;")
         self.audio_selector_combo = StyledCombo()
-        self.audio_selector_combo.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.audio_selector_combo.currentIndexChanged.connect(self._load_selected_transcript)
+        self.audio_selector_combo.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed
+        )
+        self.audio_selector_combo.currentIndexChanged.connect(
+            self._load_selected_transcript
+        )
         selector_row.addWidget(lbl)
         selector_row.addWidget(self.audio_selector_combo, 1)
         lay.addLayout(selector_row)
@@ -1050,11 +1136,17 @@ class MainWindow(QMainWindow):
         upload_btn.clicked.connect(self._upload_selected_documents)
         self.upload_documents_button = upload_btn
 
-        lay.addWidget(self._make_topbar(
-            "Documents",
-            "select → link → upload",
-            [self.document_audio_link_combo, self.select_documents_button, upload_btn],
-        ))
+        lay.addWidget(
+            self._make_topbar(
+                "Documents",
+                "select → link → upload",
+                [
+                    self.document_audio_link_combo,
+                    self.select_documents_button,
+                    upload_btn,
+                ],
+            )
+        )
 
         content = QWidget()
         content.setStyleSheet(f"background: {BG0};")
@@ -1063,8 +1155,12 @@ class MainWindow(QMainWindow):
         c_lay.setSpacing(14)
 
         self.documents_upload_attachments_box = QWidget()
-        self.documents_upload_attachments_box.setStyleSheet("background: transparent; border: none;")
-        self.documents_upload_attachments_layout = QVBoxLayout(self.documents_upload_attachments_box)
+        self.documents_upload_attachments_box.setStyleSheet(
+            "background: transparent; border: none;"
+        )
+        self.documents_upload_attachments_layout = QVBoxLayout(
+            self.documents_upload_attachments_box
+        )
         self.documents_upload_attachments_layout.setContentsMargins(0, 0, 0, 0)
         self.documents_upload_attachments_layout.setSpacing(6)
         c_lay.addWidget(self.documents_upload_attachments_box)
@@ -1072,17 +1168,33 @@ class MainWindow(QMainWindow):
         # Table panel
         table_panel = PanelFrame("stored documents")
         self.documents_table = QTableWidget(0, 4)
-        self.documents_table.setHorizontalHeaderLabels(["Filename", "Linked Session", "Preview", "Added"])
-        self.documents_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.documents_table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
-        self.documents_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.documents_table.setHorizontalHeaderLabels(
+            ["Filename", "Linked Session", "Preview", "Added"]
+        )
+        self.documents_table.setSelectionBehavior(
+            QAbstractItemView.SelectionBehavior.SelectRows
+        )
+        self.documents_table.setSelectionMode(
+            QAbstractItemView.SelectionMode.SingleSelection
+        )
+        self.documents_table.setEditTriggers(
+            QAbstractItemView.EditTrigger.NoEditTriggers
+        )
         self.documents_table.verticalHeader().setVisible(False)
         self.documents_table.verticalHeader().setDefaultSectionSize(42)
         self.documents_table.horizontalHeader().setStretchLastSection(False)
-        self.documents_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Interactive)
-        self.documents_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.documents_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        self.documents_table.horizontalHeader().setSectionResizeMode(3, QHeaderView.ResizeMode.ResizeToContents)
+        self.documents_table.horizontalHeader().setSectionResizeMode(
+            0, QHeaderView.ResizeMode.Interactive
+        )
+        self.documents_table.horizontalHeader().setSectionResizeMode(
+            1, QHeaderView.ResizeMode.ResizeToContents
+        )
+        self.documents_table.horizontalHeader().setSectionResizeMode(
+            2, QHeaderView.ResizeMode.Stretch
+        )
+        self.documents_table.horizontalHeader().setSectionResizeMode(
+            3, QHeaderView.ResizeMode.ResizeToContents
+        )
         self.documents_table.setColumnWidth(0, 300)
         self.documents_table.setShowGrid(False)
         self.documents_table.setMouseTracking(True)
@@ -1111,7 +1223,9 @@ class MainWindow(QMainWindow):
             }}
             QTableCornerButton::section {{ background: transparent; border: none; }}
         """)
-        self.documents_table.itemSelectionChanged.connect(self._show_selected_document_text)
+        self.documents_table.itemSelectionChanged.connect(
+            self._show_selected_document_text
+        )
         table_panel.body_layout().addWidget(self.documents_table)
         c_lay.addWidget(table_panel, 1)
 
@@ -1151,11 +1265,13 @@ class MainWindow(QMainWindow):
         gen_btn.clicked.connect(self._generate_notes)
         self.generate_notes_button = gen_btn
 
-        lay.addWidget(self._make_topbar(
-            "Generated Notes",
-            "AI-structured study notes",
-            [self.notes_audio_combo, self.notes_mode_combo, load_btn, gen_btn],
-        ))
+        lay.addWidget(
+            self._make_topbar(
+                "Generated Notes",
+                "AI-structured study notes",
+                [self.notes_audio_combo, self.notes_mode_combo, load_btn, gen_btn],
+            )
+        )
 
         content = QWidget()
         content.setStyleSheet(f"background: {BG0};")
@@ -1169,14 +1285,12 @@ class MainWindow(QMainWindow):
         self.notes_output.setStyleSheet(
             f"QTextEdit {{ background: transparent; border: none; color: {TEXT2}; font-size: 13.5px; }}"
         )
-        self.notes_output.document().setDefaultStyleSheet(
-            f"""
+        self.notes_output.document().setDefaultStyleSheet(f"""
             h1, h2, h3, h4, h5, h6 {{ color: {TEXT}; margin-top: 12px; margin-bottom: 6px; }}
             p, li {{ color: {TEXT2}; }}
             code {{ background: {BG3}; color: {TEXT}; border-radius: 4px; padding: 1px 4px; }}
             pre {{ background: {BG3}; color: {TEXT}; border: 1px solid {BORDER}; border-radius: 8px; padding: 10px; }}
-            """
-        )
+            """)
         notes_panel.body_layout().addWidget(self.notes_output)
         c_lay.addWidget(notes_panel, 1)
 
@@ -1198,11 +1312,13 @@ class MainWindow(QMainWindow):
         clear_btn = StyledButton("Clear chat")
         clear_btn.clicked.connect(self._clear_chat)
 
-        lay.addWidget(self._make_topbar(
-            "AI Chat",
-            "RAG over your sessions + docs",
-            [self.chat_audio_combo, clear_btn],
-        ))
+        lay.addWidget(
+            self._make_topbar(
+                "AI Chat",
+                "RAG over your sessions + docs",
+                [self.chat_audio_combo, clear_btn],
+            )
+        )
 
         # Chat scroll area
         self.chat_scroll = QScrollArea()
@@ -1220,17 +1336,23 @@ class MainWindow(QMainWindow):
 
         # Sources bar
         sources_wrap = QWidget()
-        sources_wrap.setStyleSheet(f"background: {BG1}; border-top: 1px solid {BORDER};")
+        sources_wrap.setStyleSheet(
+            f"background: {BG1}; border-top: 1px solid {BORDER};"
+        )
         sw_lay = QHBoxLayout(sources_wrap)
         sw_lay.setContentsMargins(14, 8, 14, 8)
         sw_lay.setSpacing(8)
 
         src_label = QLabel("sources:")
-        src_label.setStyleSheet(f"color: {TEXT3}; font-size: 11px; font-family: 'Courier New', monospace;")
+        src_label.setStyleSheet(
+            f"color: {TEXT3}; font-size: 11px; font-family: 'Courier New', monospace;"
+        )
         sw_lay.addWidget(src_label)
 
         self.chat_sources_container = QWidget()
-        self.chat_sources_container.setStyleSheet("background: transparent; border: none;")
+        self.chat_sources_container.setStyleSheet(
+            "background: transparent; border: none;"
+        )
         self.chat_sources_layout = QHBoxLayout(self.chat_sources_container)
         self.chat_sources_layout.setContentsMargins(0, 0, 0, 0)
         self.chat_sources_layout.setSpacing(8)
@@ -1311,7 +1433,9 @@ class MainWindow(QMainWindow):
 
     # ── Async runner ─────────────────────────────────────────────────────────
 
-    def _run_async(self, callback: Any, on_success: Any, on_error: Any | None = None) -> None:
+    def _run_async(
+        self, callback: Any, on_success: Any, on_error: Any | None = None
+    ) -> None:
         thread = QThread(self)
         worker = FunctionWorker(callback)
         worker.moveToThread(thread)
@@ -1336,7 +1460,9 @@ class MainWindow(QMainWindow):
 
     def _select_audio_file(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Select audio file", "",
+            self,
+            "Select audio file",
+            "",
             "Audio Files (*.mp3 *.wav *.m4a *.ogg *.flac *.aac);;All Files (*)",
         )
         if not path:
@@ -1361,24 +1487,32 @@ class MainWindow(QMainWindow):
 
     def _select_audio_documents(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "Select documents", "",
+            self,
+            "Select documents",
+            "",
             "Documents (*.pdf *.txt *.docx *.md);;All Files (*)",
         )
         if not paths:
             return
 
-        self._selected_audio_documents = self._merge_unique_paths(self._selected_audio_documents, list(paths))
+        self._selected_audio_documents = self._merge_unique_paths(
+            self._selected_audio_documents, list(paths)
+        )
         self._refresh_attachment_views()
 
     def _select_documents_for_upload(self) -> None:
         paths, _ = QFileDialog.getOpenFileNames(
-            self, "Select documents", "",
+            self,
+            "Select documents",
+            "",
             "Documents (*.pdf *.txt *.docx *.md);;All Files (*)",
         )
         if not paths:
             return
 
-        self._selected_document_paths = self._merge_unique_paths(self._selected_document_paths, list(paths))
+        self._selected_document_paths = self._merge_unique_paths(
+            self._selected_document_paths, list(paths)
+        )
         self._refresh_attachment_views()
 
     # ── Actions ───────────────────────────────────────────────────────────────
@@ -1394,77 +1528,118 @@ class MainWindow(QMainWindow):
 
         self.start_pipeline_button.setEnabled(False)
         self.progress_widget.show()
-        self._start_audio_progress()
+        self._start_pipeline_progress()
         self.statusBar().showMessage("Processing audio and transcription…")
 
-        def task() -> dict[str, int]:
-            audio_id = self.transcription_service.process_audio(audio_path, title)
-            for p in optional_docs:
-                self.document_service.store_document(p, audio_id=audio_id)
-            return {"audio_id": audio_id, "document_count": len(optional_docs)}
+        # Create and run the worker
+        self._active_worker_thread = QThread(self)
+        self._transcription_worker = TranscriptionWorker(
+            transcription_service=self.transcription_service,
+            audio_path=audio_path,
+            title=title,
+            document_paths=optional_docs,
+            document_service=self.document_service,
+        )
+        self._transcription_worker.moveToThread(self._active_worker_thread)
 
-        def on_success(result: dict[str, int]) -> None:
-            self.start_pipeline_button.setEnabled(True)
-            self._finish_audio_progress(success=True)
-            self._selected_audio_path = None
-            self._selected_audio_documents = []
-            self.audio_title_input.clear()
-            self._refresh_attachment_views()
-            self._refresh_all()
-            self.statusBar().showMessage("Audio processed.")
-            QMessageBox.information(
-                self, "Done",
-                f"Audio stored (ID {result['audio_id']}). "
-                f"Documents processed: {result['document_count']}.",
-            )
+        self._transcription_worker.stage_changed.connect(self._on_transcription_stage)
+        self._transcription_worker.finished.connect(self._on_transcription_finished)
+        self._transcription_worker.failed.connect(self._on_transcription_failed)
 
-        def on_error(msg: str) -> None:
-            self.start_pipeline_button.setEnabled(True)
-            self._finish_audio_progress(success=False)
-            self._show_error(msg)
+        self._active_worker_thread.started.connect(self._transcription_worker.run)
+        self._active_worker_thread.finished.connect(
+            self._active_worker_thread.deleteLater
+        )
 
-        self._run_async(task, on_success, on_error)
+        self._active_worker_thread.start()
 
-    def _start_audio_progress(self) -> None:
-        self._audio_progress_value = 0
-        self.progress_bar.setValue(0)
-        self.progress_percent_label.setText("0%")
-        self.progress_label.setText("Preparing upload…")
-        self._audio_progress_timer.start()
+    def _start_pipeline_progress(self) -> None:
+        # Spinner animation
+        self._spinner_index = 0
+        self._spinner_timer = QTimer(self)
+        self._spinner_timer.setInterval(100)
+        self._spinner_timer.timeout.connect(self._update_spinner)
+        self._spinner_timer.start()
 
-    def _advance_audio_progress(self) -> None:
-        value = self._audio_progress_value
-        if value < 75:
-            step = 5
-            status = "Uploading audio…"
-        elif value < 97:
-            step = 3
-            status = "Transcribing audio…"
+        # Time tracking
+        self._stage_elapsed_timer = QElapsedTimer()
+        self._stage_elapsed_timer.start()
+        self._time_update_timer = QTimer(self)
+        self._time_update_timer.setInterval(100)
+        self._time_update_timer.timeout.connect(self._update_pipeline_time)
+        self._time_update_timer.start()
+
+        self.stage_label.setText("Preparing…")
+        self.time_label.setText("0.0s")
+
+    def _update_spinner(self) -> None:
+        self._spinner_index = (self._spinner_index + 1) % len(self._spinner_frames)
+        self.spinner_label.setText(self._spinner_frames[self._spinner_index])
+
+    def _update_pipeline_time(self) -> None:
+        if self._stage_elapsed_timer and self._stage_elapsed_timer.isValid():
+            elapsed = self._stage_elapsed_timer.elapsed() / 1000.0
+            self.time_label.setText(f"{elapsed:.1f}s")
+
+    def _stop_pipeline_progress(self) -> None:
+        if self._spinner_timer:
+            self._spinner_timer.stop()
+            self._spinner_timer = None
+        if self._time_update_timer:
+            self._time_update_timer.stop()
+            self._time_update_timer = None
+        self.progress_widget.hide()
+
+    def _on_transcription_stage(self, stage: str) -> None:
+        # Reset elapsed timer for new stage
+        if self._stage_elapsed_timer:
+            self._stage_elapsed_timer.restart()
+        # Update stage label
+        if stage == "uploading":
+            self.stage_label.setText("Uploading audio…")
+        elif stage == "transcribing":
+            self.stage_label.setText("Transcribing…")
+        elif stage == "correcting":
+            self.stage_label.setText("Correcting transcript…")
         else:
-            step = 2
-            status = "Refining transcript…"
+            self.stage_label.setText(stage)
 
+    def _on_transcription_finished(self, audio_id: int) -> None:
+        self._stop_pipeline_progress()
+        self.start_pipeline_button.setEnabled(True)
 
-        self._audio_progress_value = min(95, value + step)
-        self.progress_bar.setValue(self._audio_progress_value)
-        self.progress_percent_label.setText(f"{self._audio_progress_value}%")
-        self.progress_label.setText(status)
+        # Clear selected files and refresh
+        self._selected_audio_path = None
+        self._selected_audio_documents = []
+        self.audio_title_input.clear()
+        self._refresh_attachment_views()
+        self._refresh_all()
 
-    def _finish_audio_progress(self, success: bool) -> None:
-        if self._audio_progress_timer.isActive():
-            self._audio_progress_timer.stop()
+        self.statusBar().showMessage("Audio processed.")
+        QMessageBox.information(
+            self,
+            "Done",
+            f"Audio stored (ID {audio_id}). Documents processed.",
+        )
 
-        if success:
-            self._audio_progress_value = 100
-            self.progress_bar.setValue(100)
-            self.progress_percent_label.setText("100%")
-            self.progress_label.setText("Completed")
-            QTimer.singleShot(320, self.progress_widget.hide)
-        else:
-            self.progress_label.setText("Failed")
-            QTimer.singleShot(320, self.progress_widget.hide)
+        # Clean up thread
+        if hasattr(self, "_active_worker_thread"):
+            self._active_worker_thread.quit()
+            self._active_worker_thread.wait(2000)
 
-    def _merge_unique_paths(self, existing: list[str], incoming: list[str]) -> list[str]:
+    def _on_transcription_failed(self, message: str) -> None:
+        self._stop_pipeline_progress()
+        self.start_pipeline_button.setEnabled(True)
+        self.statusBar().showMessage("Transcription failed.")
+        QMessageBox.critical(self, "Error", message)
+
+        if hasattr(self, "_active_worker_thread"):
+            self._active_worker_thread.quit()
+            self._active_worker_thread.wait(2000)
+
+    def _merge_unique_paths(
+        self, existing: list[str], incoming: list[str]
+    ) -> list[str]:
         merged = list(existing)
         seen = {Path(p).resolve() for p in existing}
         for candidate in incoming:
@@ -1527,16 +1702,22 @@ class MainWindow(QMainWindow):
             self._refresh_attachment_views()
 
     def _remove_audio_document_attachment(self, file_path: str) -> None:
-        self._selected_audio_documents = [p for p in self._selected_audio_documents if p != file_path]
+        self._selected_audio_documents = [
+            p for p in self._selected_audio_documents if p != file_path
+        ]
         self._refresh_attachment_views()
 
     def _remove_documents_upload_attachment(self, file_path: str) -> None:
-        self._selected_document_paths = [p for p in self._selected_document_paths if p != file_path]
+        self._selected_document_paths = [
+            p for p in self._selected_document_paths if p != file_path
+        ]
         self._refresh_attachment_views()
 
     def _upload_selected_documents(self) -> None:
         if not self._selected_document_paths:
-            QMessageBox.warning(self, "Missing documents", "Select one or more documents first.")
+            QMessageBox.warning(
+                self, "Missing documents", "Select one or more documents first."
+            )
             return
 
         paths = list(self._selected_document_paths)
@@ -1599,7 +1780,9 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("Generating response…")
 
         def task() -> dict[str, object]:
-            return self.rag_service.answer_question(question=question, audio_id=audio_id)
+            return self.rag_service.answer_question(
+                question=question, audio_id=audio_id
+            )
 
         def on_success(result: dict[str, object]) -> None:
             self.send_chat_button.setEnabled(True)
@@ -1652,7 +1835,9 @@ class MainWindow(QMainWindow):
 
         if not unique_sources:
             empty = QLabel("none")
-            empty.setStyleSheet(f"color: {TEXT3}; font-size: 11px; font-family: 'Courier New', monospace;")
+            empty.setStyleSheet(
+                f"color: {TEXT3}; font-size: 11px; font-family: 'Courier New', monospace;"
+            )
             self.chat_sources_layout.addWidget(empty)
             self.chat_sources_layout.addStretch()
             return
@@ -1690,7 +1875,7 @@ class MainWindow(QMainWindow):
             bg = ACCENT_S
             fg = ACCENT2
         else:
-            tag = (ext[:4].upper() if ext else "FILE")
+            tag = ext[:4].upper() if ext else "FILE"
             bg = BG3
             fg = TEXT2
 
@@ -1712,7 +1897,9 @@ class MainWindow(QMainWindow):
         lay.addWidget(self._make_file_icon(filename))
 
         name = QLabel(filename)
-        name.setStyleSheet(f"color: {TEXT2}; font-size: 13px; background: transparent; border: none;")
+        name.setStyleSheet(
+            f"color: {TEXT2}; font-size: 13px; background: transparent; border: none;"
+        )
         lay.addWidget(name, 1)
         return cell
 
@@ -1734,7 +1921,9 @@ class MainWindow(QMainWindow):
                 f"color: {TEXT3}; font-size: 13px; background: transparent; border: none;"
             )
 
-        lay.addWidget(lbl, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
+        lay.addWidget(
+            lbl, alignment=Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
+        )
         lay.addStretch()
         return cell
 
@@ -1750,11 +1939,15 @@ class MainWindow(QMainWindow):
         transcript = self.database.get_transcript_by_audio(audio_id)
         if transcript is None:
             self.raw_transcript_text.setPlainText("No transcript available yet.")
-            self.corrected_transcript_text.setPlainText("No corrected transcript available yet.")
+            self.corrected_transcript_text.setPlainText(
+                "No corrected transcript available yet."
+            )
             return
 
         self.raw_transcript_text.setPlainText(str(transcript.get("raw_text", "")))
-        self.corrected_transcript_text.setPlainText(str(transcript.get("corrected_text", "")))
+        self.corrected_transcript_text.setPlainText(
+            str(transcript.get("corrected_text", ""))
+        )
 
     def _refresh_documents_table(self) -> None:
         documents = self.database.list_documents()
@@ -1770,7 +1963,9 @@ class MainWindow(QMainWindow):
             filename = str(doc.get("original_filename", ""))
             linked = doc.get("audio_title") or "—"
             raw_preview = str(doc.get("extracted_text", "")).replace("\n", " ").strip()
-            preview = (raw_preview[:120] + "…") if len(raw_preview) > 120 else raw_preview
+            preview = (
+                (raw_preview[:120] + "…") if len(raw_preview) > 120 else raw_preview
+            )
 
             # Keep first two items empty because those columns are fully custom widgets.
             filename_item = QTableWidgetItem("")
@@ -1793,8 +1988,12 @@ class MainWindow(QMainWindow):
             self.documents_table.setItem(row, 2, preview_item)
             self.documents_table.setItem(row, 3, added_item)
 
-            self.documents_table.setCellWidget(row, 0, self._make_filename_cell(filename))
-            self.documents_table.setCellWidget(row, 1, self._make_linked_cell(str(linked)))
+            self.documents_table.setCellWidget(
+                row, 0, self._make_filename_cell(filename)
+            )
+            self.documents_table.setCellWidget(
+                row, 1, self._make_linked_cell(str(linked))
+            )
             self.documents_table.setRowHeight(row, 42)
 
         if documents:
@@ -1816,7 +2015,11 @@ class MainWindow(QMainWindow):
         # Some model responses wrap markdown in a fenced block; unwrap it for readable rendering.
         for _ in range(2):
             lines = text.splitlines()
-            if len(lines) >= 2 and lines[0].strip().startswith("```") and lines[-1].strip() == "```":
+            if (
+                len(lines) >= 2
+                and lines[0].strip().startswith("```")
+                and lines[-1].strip() == "```"
+            ):
                 text = "\n".join(lines[1:-1]).strip()
             else:
                 break
@@ -1898,8 +2101,10 @@ class MainWindow(QMainWindow):
     def closeEvent(self, event: QCloseEvent) -> None:
         if self._api_status_timer.isActive():
             self._api_status_timer.stop()
-        if self._audio_progress_timer.isActive():
-            self._audio_progress_timer.stop()
+        if self._spinner_timer and self._spinner_timer.isActive():
+            self._spinner_timer.stop()
+        if self._time_update_timer and self._time_update_timer.isActive():
+            self._time_update_timer.stop()
         for thread, _ in list(self._active_workers):
             thread.quit()
             thread.wait(2000)

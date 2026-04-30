@@ -13,9 +13,19 @@ from PyQt6.QtCore import (
     pyqtSignal,
     QElapsedTimer,
     QUrl,
+    QDateTime,
 )
 from PyQt6.QtGui import QCloseEvent, QColor, QPalette, QFont, QIcon, QPainter, QPen
-from PyQt6.QtMultimedia import QMediaPlayer, QAudioOutput
+
+from PyQt6.QtMultimedia import (
+    QMediaPlayer,
+    QAudioOutput,
+    QMediaRecorder,
+    QMediaCaptureSession,
+    QAudioInput,
+    QMediaDevices,
+    QMediaFormat,
+)
 from PyQt6.QtMultimediaWidgets import QVideoWidget
 from PyQt6.QtWidgets import (
     QAbstractItemView,
@@ -619,6 +629,17 @@ class MainWindow(QMainWindow):
         self.position_slider = None
         self.time_label_player = None
 
+        # Recording members
+        self.recorder = None
+        self.capture_session = None
+        self.recorded_file_path = None
+        self.recording_elapsed_timer = None
+        self.recording_timer = None
+        self.rec_device_combo = None
+        self.available_audio_inputs = []
+
+        self.selected_audio_device = None
+
         self._active_workers: list[tuple[QThread, FunctionWorker]] = []
 
         # UX decision: one audio per transcription job (clear mapping), multiple docs as attachments.
@@ -957,14 +978,22 @@ class MainWindow(QMainWindow):
 
         # Sub-tabs (store reference for later switching)
         self.audio_sub_stack = QStackedWidget()
+        self.audio_sub_stack.currentChanged.connect(self._on_audio_subtab_changed)
         self.audio_sub_stack.setStyleSheet(f"background: {BG0};")
-        self.audio_sub_stack.addWidget(self._build_audio_upload_sub())
-        self.audio_sub_stack.addWidget(self._build_audio_transcripts_sub())
+        self.audio_sub_stack.addWidget(self._build_audio_upload_sub())  # index 0
+        self.audio_sub_stack.addWidget(self._build_audio_record_sub())  # index 1 (new)
+        self.audio_sub_stack.addWidget(self._build_audio_transcripts_sub())  # index 2
         lay.addWidget(
-            self._make_subtab_bar(["Upload", "Transcripts"], self.audio_sub_stack)
+            self._make_subtab_bar(
+                ["Upload", "Record", "Transcripts"], self.audio_sub_stack
+            )
         )
         lay.addWidget(self.audio_sub_stack, 1)
         return page
+
+    def _on_audio_subtab_changed(self, index: int) -> None:
+        if index == 1:  # Record tab
+            self._refresh_audio_inputs()
 
     def _build_audio_upload_sub(self) -> QWidget:
         scroll = QScrollArea()
@@ -1091,6 +1120,97 @@ class MainWindow(QMainWindow):
         scroll.setWidget(inner)
         return scroll
 
+    def _build_audio_record_sub(self) -> QWidget:
+        """Sub-tab for in-app microphone recording."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("background: transparent; border: none;")
+
+        inner = QWidget()
+        inner.setStyleSheet(f"background: {BG0};")
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(24, 24, 24, 24)
+        lay.setSpacing(16)
+
+        # ---- Recording controls panel ----
+        record_panel = QFrame()
+        record_panel.setStyleSheet(f"""
+            QFrame {{
+                background: {BG1};
+                border: 1px solid {BORDER};
+                border-radius: 14px;
+            }}
+        """)
+        panel_layout = QVBoxLayout(record_panel)
+        panel_layout.setContentsMargins(20, 20, 20, 20)
+        panel_layout.setSpacing(14)
+
+        # Title field
+        title_section = QWidget()
+        ts_lay = QVBoxLayout(title_section)
+        ts_lay.setContentsMargins(0, 0, 0, 0)
+        ts_lay.setSpacing(6)
+        ts_lay.addWidget(SectionLabel("Lecture Title (optional)"))
+        self.record_title_input = StyledInput("e.g. Introduction to ML — Lecture 4")
+        ts_lay.addWidget(self.record_title_input)
+        panel_layout.addWidget(title_section)
+
+        # Timer & control buttons row
+        controls_row = QHBoxLayout()
+        controls_row.setSpacing(12)
+
+        self.rec_timer_label = QLabel("00:00")
+        self.rec_timer_label.setStyleSheet(
+            f"color: {TEXT}; font-size: 36px; font-weight: 600; font-family: monospace;"
+        )
+        self.rec_timer_label.setFixedWidth(120)
+
+        self.record_start_btn = StyledButton("Start Recording", primary=True)
+        self.record_start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.record_start_btn.clicked.connect(self._start_recording)
+
+        self.record_stop_btn = StyledButton("Stop Recording")
+        self.record_stop_btn.setEnabled(False)
+        self.record_stop_btn.clicked.connect(self._stop_recording)
+
+        controls_row.addWidget(self.rec_timer_label)
+        controls_row.addStretch()
+        controls_row.addWidget(self.record_start_btn)
+        controls_row.addWidget(self.record_stop_btn)
+        panel_layout.addLayout(controls_row)
+
+        # Status / error label
+        self.rec_status_label = MonoLabel("Ready", TEXT3)
+        panel_layout.addWidget(self.rec_status_label)
+
+        # Device selector
+        device_row = QHBoxLayout()
+        device_row.setSpacing(8)
+        device_row.addWidget(SectionLabel("Microphone"))
+        self.rec_device_combo = StyledCombo()
+        self.rec_device_combo.currentIndexChanged.connect(self._on_rec_device_changed)
+        device_row.addWidget(self.rec_device_combo, 1)
+        panel_layout.addLayout(device_row)
+
+        lay.addWidget(record_panel)
+
+        # ---- After recording: Transcribe button ----
+        transcribe_row = QHBoxLayout()
+        transcribe_row.setSpacing(10)
+        transcribe_row.addStretch()
+        self.transcribe_recording_btn = StyledButton(
+            "Transcribe Recording", primary=True
+        )
+        self.transcribe_recording_btn.setEnabled(False)
+        self.transcribe_recording_btn.clicked.connect(self._transcribe_recorded_audio)
+        transcribe_row.addWidget(self.transcribe_recording_btn)
+        transcribe_row.addStretch()
+        lay.addLayout(transcribe_row)
+
+        lay.addStretch()
+        scroll.setWidget(inner)
+        return scroll
+
     def _build_audio_transcripts_sub(self) -> QWidget:
         widget = QWidget()
         widget.setStyleSheet(f"background: {BG0};")
@@ -1185,6 +1305,209 @@ class MainWindow(QMainWindow):
 
         lay.addLayout(panels_row, 1)
         return widget
+
+    # ----------------------------------------------------------------------
+    # Recording logic
+    # ----------------------------------------------------------------------
+    def _init_recorder(self) -> None:
+        """Set up a brand new QMediaRecorder and capture session."""
+        # Force recreate every time to avoid stale state
+        if self.recorder:
+            self.recorder.deleteLater()
+            self.recorder = None
+        if self.capture_session:
+            self.capture_session.deleteLater()
+            self.capture_session = None
+
+        self.capture_session = QMediaCaptureSession()
+
+        # Get the selected device (or default if combo not ready).
+        # IMPORTANT: store as self._audio_input — on Linux/GStreamer, a local variable
+        # gets garbage-collected by Python before the capture session retains it,
+        # causing "No audio input device in capture session" errors.
+        if self.selected_audio_device is not None:
+            self._audio_input = QAudioInput(self.selected_audio_device)
+            if self._audio_input.device().isNull():
+                print("WARNING: Selected device is not usable, falling back to default")
+                self._audio_input = QAudioInput(QMediaDevices.defaultAudioInput())
+        else:
+            self._audio_input = QAudioInput(QMediaDevices.defaultAudioInput())
+
+        self.capture_session.setAudioInput(self._audio_input)
+
+        self.recorder = QMediaRecorder()
+        self.capture_session.setRecorder(self.recorder)
+
+        fmt = QMediaFormat()
+        fmt.setFileFormat(QMediaFormat.FileFormat.Wave)
+        self.recorder.setMediaFormat(fmt)
+
+        self.recorder.recorderStateChanged.connect(self._on_recorder_state_changed)
+        self.recorder.durationChanged.connect(self._on_recording_duration_changed)
+        self.recorder.errorOccurred.connect(self._on_recorder_error)
+
+    def _start_recording(self) -> None:
+        self._init_recorder()
+        if not self.recorder:
+            return
+
+        # Debug: show which device is actually being used
+        audio_input = self.capture_session.audioInput()
+        if audio_input:
+            device = audio_input.device()
+            print(f"Using audio device: {device.description()} (id: {device.id()})")
+        else:
+            print("ERROR: No audio input device in capture session")
+            self.rec_status_label.setText(
+                "No audio input set. Check microphone selection."
+            )
+            return
+
+        # Create a unique filename in audio storage directory
+        timestamp = QDateTime.currentDateTime().toString("yyyyMMdd_hhmmss")
+        filename = f"recording_{timestamp}.wav"
+        file_path = self.transcription_service.audio_storage_dir / filename
+        self.recorded_file_path = str(file_path)
+
+        self.recorder.setOutputLocation(QUrl.fromLocalFile(self.recorded_file_path))
+
+        # Attempt to start recording
+        try:
+            self.recorder.record()
+        except Exception as e:
+            self.rec_status_label.setText(f"Failed to start recording: {e}")
+            QMessageBox.warning(self, "Recording Error", str(e))
+
+    def _stop_recording(self) -> None:
+        """Stop the active recording."""
+        if (
+            self.recorder
+            and self.recorder.recorderState()
+            == QMediaRecorder.RecorderState.RecordingState
+        ):
+            self.recorder.stop()
+
+    def _on_recorder_state_changed(self, state: QMediaRecorder.RecorderState) -> None:
+        if state == QMediaRecorder.RecorderState.RecordingState:
+            self.record_start_btn.setEnabled(False)
+            self.record_stop_btn.setEnabled(True)
+            self.transcribe_recording_btn.setEnabled(False)
+            self.rec_status_label.setText("Recording...")
+            # Start timer
+            self.recording_elapsed_timer = QElapsedTimer()
+            self.recording_elapsed_timer.start()
+            self.recording_timer = QTimer()
+            self.recording_timer.timeout.connect(self._update_recording_timer)
+            self.recording_timer.start(100)
+            self.rec_timer_label.setText("00:00")
+        elif state == QMediaRecorder.RecorderState.StoppedState:
+            self.record_start_btn.setEnabled(True)
+            self.record_stop_btn.setEnabled(False)
+            self.transcribe_recording_btn.setEnabled(True)
+            if self.recording_timer:
+                self.recording_timer.stop()
+            self.rec_status_label.setText(
+                "Recording finished. Click 'Transcribe Recording'."
+            )
+            # Check if file was actually written
+            if self.recorded_file_path and not Path(self.recorded_file_path).exists():
+                self.rec_status_label.setText("Error: recording file not saved.")
+                self.transcribe_recording_btn.setEnabled(False)
+        elif state == QMediaRecorder.RecorderState.PausedState:
+            pass  # not used
+
+    def _update_recording_timer(self) -> None:
+        if self.recording_elapsed_timer and self.recording_elapsed_timer.isValid():
+            elapsed_ms = self.recording_elapsed_timer.elapsed()
+            seconds = elapsed_ms // 1000
+            minutes = seconds // 60
+            seconds = seconds % 60
+            self.rec_timer_label.setText(f"{minutes:02d}:{seconds:02d}")
+
+    def _on_recording_duration_changed(self, duration: int) -> None:
+        # Duration in milliseconds – we already have our own timer, but can keep for accuracy
+        pass
+
+    def _on_recorder_error(
+        self, error: QMediaRecorder.Error, error_string: str
+    ) -> None:
+        if error != QMediaRecorder.Error.NoError:
+            self.rec_status_label.setText(f"Recorder error: {error_string}")
+            self.record_start_btn.setEnabled(True)
+            self.record_stop_btn.setEnabled(False)
+            self.transcribe_recording_btn.setEnabled(False)
+            if self.recording_timer:
+                self.recording_timer.stop()
+
+    def _transcribe_recorded_audio(self) -> None:
+        """Handle transcription of the recorded file using the existing pipeline."""
+        if not self.recorded_file_path or not Path(self.recorded_file_path).exists():
+            QMessageBox.warning(self, "No recording", "No valid recording found.")
+            return
+
+        title = self.record_title_input.text().strip()
+        # We can reuse the same pipeline as file upload, but with an empty document list
+        # (users can still attach documents via the "Upload" subtab if they want).
+        # To provide a smooth experience, we simply call the pipeline directly.
+        self._process_audio_with_pipeline(
+            audio_path=self.recorded_file_path,
+            title=title,
+            doc_paths=[],  # Documents can still be attached separately; no forced linking
+        )
+
+        # Optionally clear the recorded file reference after starting
+        # (the pipeline will copy it, leaving the original)
+        self.transcribe_recording_btn.setEnabled(False)
+
+    def _refresh_audio_inputs(self) -> None:
+        """Refresh the list of available audio input devices."""
+        self.available_audio_inputs = QMediaDevices.audioInputs()
+        if not self.available_audio_inputs:
+            self.rec_status_label.setText(
+                "No microphone found. Check system settings and ensure a recording device is available."
+            )
+            self.record_start_btn.setEnabled(False)
+            self.record_stop_btn.setEnabled(False)
+            self.transcribe_recording_btn.setEnabled(False)
+            if hasattr(self, "rec_device_combo"):
+                self.rec_device_combo.clear()
+                self.rec_device_combo.addItem("No devices", None)
+            return
+
+        self.record_start_btn.setEnabled(True)
+
+        # Populate combo box
+        if hasattr(self, "rec_device_combo"):
+            self.rec_device_combo.blockSignals(True)
+            self.rec_device_combo.clear()
+            for i, dev in enumerate(self.available_audio_inputs):
+                test_input = QAudioInput(dev)
+                if test_input.device().isNull():
+                    continue  # skip this device
+                description = dev.description().strip()
+                if not description:
+                    description = f"Device {i+1}"
+                self.rec_device_combo.addItem(description, i)
+            self.rec_device_combo.blockSignals(False)
+            # Select default device
+            default_idx = 0
+            default_dev = QMediaDevices.defaultAudioInput()
+            if default_dev:
+                for i, dev in enumerate(self.available_audio_inputs):
+                    if dev == default_dev:
+                        default_idx = i
+                        break
+            self.rec_device_combo.setCurrentIndex(default_idx)
+            self._on_rec_device_changed(default_idx)
+
+    def _on_rec_device_changed(self, idx: int) -> None:
+        if idx < 0 or not self.available_audio_inputs:
+            self.selected_audio_device = None
+            return
+        self.selected_audio_device = self.available_audio_inputs[idx]
+        self.rec_status_label.setText(
+            f"Microphone: {self.selected_audio_device.description()}"
+        )
 
     # ── DOCUMENTS PAGE ────────────────────────────────────────────────────────
 
@@ -1588,22 +1911,27 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Missing audio", "Select an audio file first.")
             return
 
-        audio_path = self._selected_audio_path
-        title = self.audio_title_input.text().strip()
-        optional_docs = list(self._selected_audio_documents)
+        self._process_audio_with_pipeline(
+            audio_path=self._selected_audio_path,
+            title=self.audio_title_input.text().strip(),
+            doc_paths=list(self._selected_audio_documents),
+        )
 
+    def _process_audio_with_pipeline(
+        self, audio_path: str, title: str, doc_paths: list[str]
+    ) -> None:
+        """Common logic to start the transcription worker."""
         self.start_pipeline_button.setEnabled(False)
         self.progress_widget.show()
         self._start_pipeline_progress()
         self.statusBar().showMessage("Processing audio and transcription…")
 
-        # Create and run the worker
         self._active_worker_thread = QThread(self)
         self._transcription_worker = TranscriptionWorker(
             transcription_service=self.transcription_service,
             audio_path=audio_path,
             title=title,
-            document_paths=optional_docs,
+            document_paths=doc_paths,
             document_service=self.document_service,
         )
         self._transcription_worker.moveToThread(self._active_worker_thread)
@@ -1683,7 +2011,7 @@ class MainWindow(QMainWindow):
 
         # Switch to Transcripts sub-tab and select the new audio
         if hasattr(self, "audio_sub_stack"):
-            self.audio_sub_stack.setCurrentIndex(1)  # index 1 = Transcripts
+            self.audio_sub_stack.setCurrentIndex(2)
         # Select the newly created audio in the combo
         index = self.audio_selector_combo.findData(audio_id)
         if index >= 0:
@@ -2272,4 +2600,10 @@ class MainWindow(QMainWindow):
         for thread, _ in list(self._active_workers):
             thread.quit()
             thread.wait(2000)
+        if (
+            self.recorder
+            and self.recorder.recorderState()
+            == QMediaRecorder.RecorderState.RecordingState
+        ):
+            self.recorder.stop()
         super().closeEvent(event)

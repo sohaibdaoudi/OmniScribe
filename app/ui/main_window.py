@@ -1193,6 +1193,38 @@ class MainWindow(QMainWindow):
         panel_layout.addLayout(device_row)
 
         lay.addWidget(record_panel)
+        # Progress widget (same as upload tab)
+        self.record_progress_widget = QWidget()
+        self.record_progress_widget.setStyleSheet(
+            f"background: {ACCENT_S}; border: 1px solid {ACCENT_G}; border-radius: 10px;"
+        )
+        rpw_lay = QHBoxLayout(self.record_progress_widget)
+        rpw_lay.setContentsMargins(14, 10, 14, 10)
+        rpw_lay.setSpacing(12)
+
+        self.record_spinner_label = QLabel("◐")
+        self.record_spinner_label.setStyleSheet(
+            f"color: {ACCENT2}; font-size: 16px; font-family: monospace;"
+        )
+        self.record_spinner_label.setFixedWidth(20)
+
+        self.record_stage_label = QLabel("Preparing…")
+        self.record_stage_label.setStyleSheet(
+            f"color: {ACCENT2}; font-size: 12px; font-family: 'Courier New', monospace;"
+        )
+
+        self.record_time_label = QLabel("0.0s")
+        self.record_time_label.setStyleSheet(
+            f"color: {ACCENT2}; font-size: 12px; font-family: 'Courier New', monospace;"
+        )
+        self.record_time_label.setFixedWidth(50)
+
+        rpw_lay.addWidget(self.record_spinner_label)
+        rpw_lay.addWidget(self.record_stage_label, 1)
+        rpw_lay.addWidget(self.record_time_label)
+
+        self.record_progress_widget.hide()
+        lay.addWidget(self.record_progress_widget)
 
         lay.addStretch()
         scroll.setWidget(inner)
@@ -1944,14 +1976,12 @@ class MainWindow(QMainWindow):
         self._active_worker_thread.start()
 
     def _start_pipeline_progress(self) -> None:
-        # Spinner animation
         self._spinner_index = 0
         self._spinner_timer = QTimer(self)
         self._spinner_timer.setInterval(100)
         self._spinner_timer.timeout.connect(self._update_spinner)
         self._spinner_timer.start()
 
-        # Time tracking
         self._stage_elapsed_timer = QElapsedTimer()
         self._stage_elapsed_timer.start()
         self._time_update_timer = QTimer(self)
@@ -1962,14 +1992,32 @@ class MainWindow(QMainWindow):
         self.stage_label.setText("Preparing…")
         self.time_label.setText("0.0s")
 
+        # Also show on record tab if that's the active sub-tab
+        if (
+            hasattr(self, "audio_sub_stack")
+            and self.audio_sub_stack.currentIndex() == 1
+        ):
+            self.record_stage_label.setText("Preparing…")
+            self.record_time_label.setText("0.0s")
+            self.record_spinner_label.setText("◐")
+            self.record_progress_widget.show()
+        else:
+            self.progress_widget.show()
+
     def _update_spinner(self) -> None:
         self._spinner_index = (self._spinner_index + 1) % len(self._spinner_frames)
-        self.spinner_label.setText(self._spinner_frames[self._spinner_index])
+        frame = self._spinner_frames[self._spinner_index]
+        self.spinner_label.setText(frame)
+        if hasattr(self, "record_spinner_label"):
+            self.record_spinner_label.setText(frame)
 
     def _update_pipeline_time(self) -> None:
         if self._stage_elapsed_timer and self._stage_elapsed_timer.isValid():
             elapsed = self._stage_elapsed_timer.elapsed() / 1000.0
-            self.time_label.setText(f"{elapsed:.1f}s")
+            txt = f"{elapsed:.1f}s"
+            self.time_label.setText(txt)
+            if hasattr(self, "record_time_label"):
+                self.record_time_label.setText(txt)
 
     def _stop_pipeline_progress(self) -> None:
         if self._spinner_timer:
@@ -1979,20 +2027,22 @@ class MainWindow(QMainWindow):
             self._time_update_timer.stop()
             self._time_update_timer = None
         self.progress_widget.hide()
+        if hasattr(self, "record_progress_widget"):
+            self.record_progress_widget.hide()
 
     def _on_transcription_stage(self, stage: str) -> None:
-        # Reset elapsed timer for new stage
         if self._stage_elapsed_timer:
             self._stage_elapsed_timer.restart()
-        # Update stage label
-        if stage == "uploading":
-            self.stage_label.setText("Uploading audio…")
-        elif stage == "transcribing":
-            self.stage_label.setText("Transcribing…")
-        elif stage == "correcting":
-            self.stage_label.setText("Correcting transcript…")
-        else:
-            self.stage_label.setText(stage)
+
+        labels = {
+            "uploading": "Uploading audio…",
+            "transcribing": "Transcribing…",
+            "correcting": "Correcting transcript…",
+        }
+        text = labels.get(stage, stage)
+        self.stage_label.setText(text)
+        if hasattr(self, "record_stage_label"):
+            self.record_stage_label.setText(text)
 
     def _on_transcription_finished(self, audio_id: int) -> None:
         self._stop_pipeline_progress()

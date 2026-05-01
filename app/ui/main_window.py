@@ -1194,19 +1194,6 @@ class MainWindow(QMainWindow):
 
         lay.addWidget(record_panel)
 
-        # ---- After recording: Transcribe button ----
-        transcribe_row = QHBoxLayout()
-        transcribe_row.setSpacing(10)
-        transcribe_row.addStretch()
-        self.transcribe_recording_btn = StyledButton(
-            "Transcribe Recording", primary=True
-        )
-        self.transcribe_recording_btn.setEnabled(False)
-        self.transcribe_recording_btn.clicked.connect(self._transcribe_recorded_audio)
-        transcribe_row.addWidget(self.transcribe_recording_btn)
-        transcribe_row.addStretch()
-        lay.addLayout(transcribe_row)
-
         lay.addStretch()
         scroll.setWidget(inner)
         return scroll
@@ -1391,9 +1378,10 @@ class MainWindow(QMainWindow):
         if state == QMediaRecorder.RecorderState.RecordingState:
             self.record_start_btn.setEnabled(False)
             self.record_stop_btn.setEnabled(True)
-            self.transcribe_recording_btn.setEnabled(False)
+            self.start_pipeline_button.setEnabled(
+                False
+            )  # disable Transcribe while recording
             self.rec_status_label.setText("Recording...")
-            # Start timer
             self.recording_elapsed_timer = QElapsedTimer()
             self.recording_elapsed_timer.start()
             self.recording_timer = QTimer()
@@ -1403,18 +1391,20 @@ class MainWindow(QMainWindow):
         elif state == QMediaRecorder.RecorderState.StoppedState:
             self.record_start_btn.setEnabled(True)
             self.record_stop_btn.setEnabled(False)
-            self.transcribe_recording_btn.setEnabled(True)
             if self.recording_timer:
                 self.recording_timer.stop()
-            self.rec_status_label.setText(
-                "Recording finished. Click 'Transcribe Recording'."
-            )
-            # Check if file was actually written
             if self.recorded_file_path and not Path(self.recorded_file_path).exists():
                 self.rec_status_label.setText("Error: recording file not saved.")
-                self.transcribe_recording_btn.setEnabled(False)
+                self.start_pipeline_button.setEnabled(False)
+            else:
+                self.rec_status_label.setText(
+                    "Recording finished. Click 'Transcribe' above."
+                )
+                self.start_pipeline_button.setEnabled(
+                    True
+                )  # enable top Transcribe button
         elif state == QMediaRecorder.RecorderState.PausedState:
-            pass  # not used
+            pass
 
     def _update_recording_timer(self) -> None:
         if self.recording_elapsed_timer and self.recording_elapsed_timer.isValid():
@@ -1435,29 +1425,20 @@ class MainWindow(QMainWindow):
             self.rec_status_label.setText(f"Recorder error: {error_string}")
             self.record_start_btn.setEnabled(True)
             self.record_stop_btn.setEnabled(False)
-            self.transcribe_recording_btn.setEnabled(False)
+            self.start_pipeline_button.setEnabled(False)
             if self.recording_timer:
                 self.recording_timer.stop()
 
     def _transcribe_recorded_audio(self) -> None:
-        """Handle transcription of the recorded file using the existing pipeline."""
         if not self.recorded_file_path or not Path(self.recorded_file_path).exists():
             QMessageBox.warning(self, "No recording", "No valid recording found.")
             return
-
         title = self.record_title_input.text().strip()
-        # We can reuse the same pipeline as file upload, but with an empty document list
-        # (users can still attach documents via the "Upload" subtab if they want).
-        # To provide a smooth experience, we simply call the pipeline directly.
         self._process_audio_with_pipeline(
             audio_path=self.recorded_file_path,
             title=title,
-            doc_paths=[],  # Documents can still be attached separately; no forced linking
+            doc_paths=[],
         )
-
-        # Optionally clear the recorded file reference after starting
-        # (the pipeline will copy it, leaving the original)
-        self.transcribe_recording_btn.setEnabled(False)
 
     def _refresh_audio_inputs(self) -> None:
         """Refresh the list of available audio input devices."""
@@ -1907,10 +1888,25 @@ class MainWindow(QMainWindow):
     # ── Actions ───────────────────────────────────────────────────────────────
 
     def _start_audio_pipeline(self) -> None:
+        # If we're on the Record tab and have a recorded file, use that
+        if (
+            hasattr(self, "audio_sub_stack")
+            and self.audio_sub_stack.currentIndex() == 1
+            and self.recorded_file_path
+            and Path(self.recorded_file_path).exists()
+        ):
+            title = self.record_title_input.text().strip()
+            self._process_audio_with_pipeline(
+                audio_path=self.recorded_file_path,
+                title=title,
+                doc_paths=[],
+            )
+            return
+
+        # Otherwise, normal upload flow
         if not self._selected_audio_path:
             QMessageBox.warning(self, "Missing audio", "Select an audio file first.")
             return
-
         self._process_audio_with_pipeline(
             audio_path=self._selected_audio_path,
             title=self.audio_title_input.text().strip(),

@@ -9,15 +9,21 @@ from typing import Callable, Optional
 
 from app.database import Database
 from app.services.groq_client import GroqClient
+from app.services.rag_service import RagService
 
 
 class TranscriptionService:
     def __init__(
-        self, database: Database, groq_client: GroqClient, audio_storage_dir: Path
+        self,
+        database: Database,
+        groq_client: GroqClient,
+        audio_storage_dir: Path,
+        rag_service: RagService,
     ) -> None:
         self.database = database
         self.groq_client = groq_client
         self.audio_storage_dir = audio_storage_dir
+        self.rag_service = rag_service
 
     def _copy_audio_file(self, source_audio_path: Path) -> Path:
         self.audio_storage_dir.mkdir(parents=True, exist_ok=True)
@@ -74,4 +80,5 @@ class TranscriptionService:
         corrected_transcript = self._correct_transcript(raw_transcript)
 
         self.database.save_transcript(audio_id, raw_transcript, corrected_transcript)
+        self.rag_service.index_audio(audio_id)
         return audio_id

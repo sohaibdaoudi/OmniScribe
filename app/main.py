@@ -27,17 +27,20 @@ def build_main_window() -> MainWindow:
         chat_model=settings.chat_model,
     )
 
+    rag_service = RagService(database=database, groq_client=groq_client)
+
     transcription_service = TranscriptionService(
         database=database,
         groq_client=groq_client,
         audio_storage_dir=settings.audio_dir,
+        rag_service=rag_service,
     )
     document_service = DocumentService(
         database=database,
         document_storage_dir=settings.documents_dir,
+        rag_service=rag_service,
     )
     notes_service = NotesService(database=database, groq_client=groq_client)
-    rag_service = RagService(database=database, groq_client=groq_client)
     api_status_service = ApiStatusService(groq_client=groq_client)
 
     return MainWindow(

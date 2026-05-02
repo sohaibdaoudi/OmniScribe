@@ -8,17 +8,26 @@ from docx import Document
 from pypdf import PdfReader
 
 from app.database import Database
+from app.services.rag_service import RagService
 
 
 class DocumentService:
-    def __init__(self, database: Database, document_storage_dir: Path) -> None:
+    def __init__(
+        self,
+        database: Database,
+        document_storage_dir: Path,
+        rag_service: RagService,  # new
+    ) -> None:
         self.database = database
         self.document_storage_dir = document_storage_dir
+        self.rag_service = rag_service
 
     def _copy_document(self, source_document_path: Path) -> Path:
         self.document_storage_dir.mkdir(parents=True, exist_ok=True)
         extension = source_document_path.suffix or ".bin"
-        destination = self.document_storage_dir / f"{uuid.uuid4().hex}{extension.lower()}"
+        destination = (
+            self.document_storage_dir / f"{uuid.uuid4().hex}{extension.lower()}"
+        )
         shutil.copy2(source_document_path, destination)
         return destination
 
@@ -42,7 +51,9 @@ class DocumentService:
             elif extension == ".docx":
                 text = self._extract_docx_text(source_document_path)
             else:
-                text = source_document_path.read_text(encoding="utf-8", errors="ignore").strip()
+                text = source_document_path.read_text(
+                    encoding="utf-8", errors="ignore"
+                ).strip()
         except Exception as exc:
             return f"Document uploaded but text extraction failed: {exc}"
 
@@ -50,7 +61,9 @@ class DocumentService:
             return "Document uploaded, but no readable text was extracted."
         return text
 
-    def store_document(self, source_document_path: str, audio_id: int | None = None) -> int:
+    def store_document(
+        self, source_document_path: str, audio_id: int | None = None
+    ) -> int:
         source_path = Path(source_document_path)
         if not source_path.exists():
             raise FileNotFoundError(f"Document file does not exist: {source_path}")
@@ -64,4 +77,5 @@ class DocumentService:
             stored_path=str(stored_path),
             extracted_text=extracted_text,
         )
+        self.rag_service.index_document(document_id)
         return document_id

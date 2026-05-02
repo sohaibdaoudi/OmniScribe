@@ -1,14 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import math
 import re
 
 from app.database import Database
 from app.services.groq_client import GroqClient
+from app.services.vector_store_service import VectorStoreService
 
-
-TOKEN_PATTERN = re.compile(r"[a-zA-Z0-9_]+")
+# Chunking parameters
+MAX_CHARS = 900
 SENTENCE_SPLIT_PATTERN = re.compile(r"(?<=[.!?])\s+")
 
 
@@ -23,11 +23,11 @@ class RagService:
     def __init__(self, database: Database, groq_client: GroqClient) -> None:
         self.database = database
         self.groq_client = groq_client
+        self.vector_store = VectorStoreService()
+        # Rebuild index on startup (or skip if you want incremental)
+        self.rebuild_index()
 
-    def _tokenize(self, text: str) -> set[str]:
-        tokens = {token.lower() for token in TOKEN_PATTERN.findall(text)}
-        return {token for token in tokens if len(token) > 2}
-
+    # ---------- Chunking (same as before, kept for compatibility) ----------
     def _split_long_text(self, text: str, max_chars: int) -> list[str]:
         content = text.strip()
         if not content:
@@ -35,16 +35,20 @@ class RagService:
         if len(content) <= max_chars:
             return [content]
 
-        # Prefer sentence boundaries so retrieval chunks stay semantically coherent.
-        units = [part.strip() for part in SENTENCE_SPLIT_PATTERN.split(content) if part.strip()]
+        # Prefer sentence boundaries
+        units = [
+            part.strip()
+            for part in SENTENCE_SPLIT_PATTERN.split(content)
+            if part.strip()
+        ]
         if len(units) <= 1:
             units = [part.strip() for part in re.split(r"\n+", content) if part.strip()]
 
         if len(units) <= 1:
             return [
-                content[i:i + max_chars].strip()
+                content[i : i + max_chars].strip()
                 for i in range(0, len(content), max_chars)
-                if content[i:i + max_chars].strip()
+                if content[i : i + max_chars].strip()
             ]
 
         pieces: list[str] = []
@@ -83,8 +87,10 @@ class RagService:
 
         return pieces
 
-    def _chunk_text(self, text: str, max_chars: int = 900) -> list[str]:
-        paragraphs = [part.strip() for part in re.split(r"\n{2,}", text) if part.strip()]
+    def _chunk_text(self, text: str, max_chars: int = MAX_CHARS) -> list[str]:
+        paragraphs = [
+            part.strip() for part in re.split(r"\n{2,}", text) if part.strip()
+        ]
         if not paragraphs:
             plain = text.strip()
             return [plain] if plain else []
@@ -107,97 +113,180 @@ class RagService:
 
         return chunks
 
-    def _select_diverse_chunks(self, ranked_chunks: list[tuple[float, Chunk]], top_k: int) -> list[Chunk]:
-        if top_k <= 0:
-            return []
+    # ---------- Index building (used on startup and incremental updates) ----------
+    def _collect_all_chunks(self) -> list[tuple[str, str, str]]:
+        """Return list of (chunk_text, source_label, source_kind) for all transcripts and documents."""
+        chunks: list[tuple[str, str, str]] = []
 
-        selected: list[Chunk] = []
-        per_source_count: dict[str, int] = {}
-
-        for _, chunk in ranked_chunks:
-            if len(selected) >= top_k:
-                break
-            if per_source_count.get(chunk.source_label, 0) >= 2:
-                continue
-
-            selected.append(chunk)
-            per_source_count[chunk.source_label] = per_source_count.get(chunk.source_label, 0) + 1
-
-        has_document = any(chunk.source_kind == "document" for chunk in selected)
-        first_document = next((chunk for _, chunk in ranked_chunks if chunk.source_kind == "document"), None)
-        if first_document is not None and not has_document:
-            if len(selected) < top_k:
-                selected.append(first_document)
-            elif selected:
-                replace_idx = len(selected) - 1
-                for idx in range(len(selected) - 1, -1, -1):
-                    if selected[idx].source_kind != "document":
-                        replace_idx = idx
-                        break
-                selected[replace_idx] = first_document
-
-        return selected[:top_k]
-
-    def _collect_chunks(self, audio_id: int | None) -> list[Chunk]:
-        chunks: list[Chunk] = []
-
-        transcripts = self.database.get_corrected_transcripts(audio_id=audio_id)
+        # Transcripts
+        transcripts = self.database.get_corrected_transcripts(audio_id=None)
         for transcript in transcripts:
-            title = transcript.get("audio_title") or f"Audio {transcript.get('audio_id')}"
+            title = (
+                transcript.get("audio_title") or f"Audio {transcript.get('audio_id')}"
+            )
             source_label = f"Transcript - {title}"
             for piece in self._chunk_text(str(transcript.get("corrected_text", ""))):
-                chunks.append(Chunk(source_label=source_label, text=piece, source_kind="transcript"))
+                chunks.append((piece, source_label, "transcript"))
 
-        documents = self.database.list_documents(audio_id=audio_id)
+        # Documents
+        documents = self.database.list_documents(audio_id=None)
         for document in documents:
             source_label = f"Document - {document.get('original_filename', 'Unknown')}"
             for piece in self._chunk_text(str(document.get("extracted_text", ""))):
-                chunks.append(Chunk(source_label=source_label, text=piece, source_kind="document"))
+                chunks.append((piece, source_label, "document"))
 
         return chunks
 
-    def retrieve_context(self, question: str, audio_id: int | None = None, top_k: int = 6) -> list[Chunk]:
-        chunks = self._collect_chunks(audio_id=audio_id)
-        if not chunks:
-            return []
+    def rebuild_index(self) -> None:
+        """Clear the vector store and re‑index all transcripts and documents."""
+        print("Rebuilding RAG index...")
+        self.vector_store.clear_collection()
+        all_chunks = self._collect_all_chunks()
+        if not all_chunks:
+            print("No chunks to index.")
+            return
 
-        query_tokens = self._tokenize(question)
-        if not query_tokens:
-            return self._select_diverse_chunks([(0.0, chunk) for chunk in chunks], top_k=top_k)
+        # Convert to format expected by add_chunks
+        chunks_for_store = [
+            (text, source_label, kind) for text, source_label, kind in all_chunks
+        ]
+        self.vector_store.add_chunks(chunks_for_store)
+        print(f"Indexed {len(chunks_for_store)} chunks.")
 
-        scored: list[tuple[float, Chunk]] = []
-        for chunk in chunks:
-            chunk_tokens = self._tokenize(chunk.text)
-            if not chunk_tokens:
-                continue
+    def index_audio(self, audio_id: int) -> None:
+        """Index (or re‑index) a specific audio's corrected transcript."""
+        transcript = self.database.get_transcript_by_audio(audio_id)
+        if not transcript:
+            return
+        corrected = str(transcript.get("corrected_text", "")).strip()
+        if not corrected:
+            return
 
-            overlap = len(query_tokens.intersection(chunk_tokens))
-            if overlap == 0:
-                continue
+        # Get audio title
+        audio = None
+        with self.database._connect() as conn:
+            row = conn.execute(
+                "SELECT title FROM audios WHERE id = ?", (audio_id,)
+            ).fetchone()
+            if row:
+                audio = dict(row)
+        title = (
+            audio.get("title", f"Audio {audio_id}") if audio else f"Audio {audio_id}"
+        )
+        source_label = f"Transcript - {title}"
 
-            score = overlap / math.sqrt(len(chunk_tokens))
-            if chunk.source_kind == "document":
-                score *= 1.1
-            scored.append((score, chunk))
+        # Chunk the transcript
+        pieces = self._chunk_text(corrected)
+        if not pieces:
+            return
 
-        if not scored:
-            return self._select_diverse_chunks([(0.0, chunk) for chunk in chunks], top_k=top_k)
+        # Remove old chunks for this source (simple: rebuild whole index for now, but we can be smarter)
+        # For MVP, we just add and let duplicates accumulate; to avoid that we can delete old ones.
+        # Since this is called only when new audio is added, we can accept rebuilding the whole index.
+        # For simplicity, we call rebuild_index, which is fine for small datasets.
+        self.rebuild_index()
 
-        scored.sort(key=lambda item: item[0], reverse=True)
-        return self._select_diverse_chunks(scored, top_k=top_k)
+    def index_document(self, document_id: int) -> None:
+        """Index a document. Similar to index_audio."""
+        docs = self.database.list_documents()
+        doc = next((d for d in docs if d["id"] == document_id), None)
+        if not doc:
+            return
+        source_label = f"Document - {doc.get('original_filename', 'Unknown')}"
+        text = str(doc.get("extracted_text", "")).strip()
+        if not text:
+            return
+        pieces = self._chunk_text(text)
+        if not pieces:
+            return
+        # Again, rebuild whole index for simplicity
+        self.rebuild_index()
 
-    def answer_question(self, question: str, audio_id: int | None = None) -> dict[str, object]:
+    # ---------- Retrieval and Answering ----------
+    def retrieve_context(
+        self, question: str, audio_id: int | None = None, top_k: int = 6
+    ) -> list[Chunk]:
+        """
+        Retrieve relevant chunks using semantic similarity.
+        If audio_id is provided, we filter results to only those belonging to that audio's
+        transcript and its linked documents. ChromaDB doesn't support metadata filtering
+        very efficiently, so we do post‑filtering.
+        """
+        # Retrieve top_k * 2 candidates, then filter by audio_id if needed
+        raw_chunks = self.vector_store.similarity_search(
+            question, top_k=top_k * 2 if audio_id else top_k
+        )
+
+        filtered = []
+        for text, meta in raw_chunks:
+            source_label = meta["source_label"]
+            chunk_kind = meta["kind"]
+
+            # If audio_id is required, we need to check if this chunk belongs to that audio.
+            # Our source_label contains either "Transcript - {title}" or "Document - {filename}".
+            # To map to audio_id, we need to reverse‑lookup by title/filename.
+            # For MVP, we implement a quick mapping.
+            if audio_id is not None:
+                # Determine which audio this chunk is associated with.
+                # For transcripts: find audio by title match.
+                # For documents: document might be linked via audio_id in DB.
+                chunk_audio_id = self._guess_audio_id_from_source(source_label)
+                if chunk_audio_id != audio_id:
+                    continue
+            filtered.append((text, meta))
+            if len(filtered) >= top_k:
+                break
+
+        # If we didn't get enough, re‑run without filtering? Not needed.
+
+        return [
+            Chunk(
+                source_label=meta["source_label"], text=text, source_kind=meta["kind"]
+            )
+            for text, meta in filtered
+        ]
+
+    def _guess_audio_id_from_source(self, source_label: str) -> int | None:
+        """Helper to map a source label to an audio_id."""
+        if source_label.startswith("Transcript - "):
+            title = source_label[13:]  # after "Transcript - "
+            with self.database._connect() as conn:
+                row = conn.execute(
+                    "SELECT id FROM audios WHERE title = ? OR stored_path LIKE ? OR id = ?",
+                    (title, f"%{title}%", 0),
+                ).fetchone()
+                if row:
+                    return row["id"]
+            return None
+        elif source_label.startswith("Document - "):
+            filename = source_label[11:]
+            # Find document by filename, then get its audio_id
+            docs = self.database.list_documents()
+            for doc in docs:
+                if doc.get("original_filename") == filename:
+                    return doc.get("audio_id")
+            return None
+        return None
+
+    def answer_question(
+        self, question: str, audio_id: int | None = None
+    ) -> dict[str, object]:
+        """Answer a question using RAG (embedding retrieval + Groq)."""
         question_text = question.strip()
         if not question_text:
             raise RuntimeError("Question is empty.")
 
-        context_chunks = self.retrieve_context(question_text, audio_id=audio_id, top_k=6)
+        context_chunks = self.retrieve_context(
+            question_text, audio_id=audio_id, top_k=6
+        )
         if not context_chunks:
-            raise RuntimeError("No corrected transcript or document content is available yet.")
+            raise RuntimeError("No relevant context found in the knowledge base.")
 
         context_sections = []
-        for index, chunk in enumerate(context_chunks, start=1):
-            context_sections.append(f"[Source {index}] {chunk.source_label}\n{chunk.text}")
+        for idx, chunk in enumerate(context_chunks, start=1):
+            context_sections.append(
+                f"[Source {idx}] {chunk.source_label}\n{chunk.text}"
+            )
 
         context_block = "\n\n".join(context_sections)
 
@@ -211,6 +300,11 @@ class RagService:
             f"{context_block}\n\n"
             f"Question: {question_text}"
         )
+
+        print("[debugging]: Enhanced prompt sent to Groq:")
+        print(f"System: {system_prompt}")
+        print(f"User:\n{user_prompt}")
+        print("=" * 80 + "\n")
 
         answer = self.groq_client.chat_completion(
             user_prompt=user_prompt,

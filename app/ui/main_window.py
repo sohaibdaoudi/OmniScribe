@@ -2034,16 +2034,16 @@ class MainWindow(QMainWindow):
 
             self.quiz_container_layout.insertWidget(self.quiz_container_layout.count() - 1, card)
 
-    def _set_quiz_content(self, content: str) -> None:
+    def _set_quiz_content(self, content: str, silent: bool = False) -> None:
         items = self._parse_quiz_markdown(content)
         if not items:
-            # Avoid leaking the answer key by showing raw markdown.
             self._render_quiz([])
-            QMessageBox.warning(
-                self,
-                "Quiz format",
-                "The generated quiz couldn't be parsed into interactive questions. Try generating again.",
-            )
+            if not silent:
+                QMessageBox.warning(
+                    self,
+                    "Quiz format",
+                    "The generated quiz couldn't be parsed into interactive questions. Try generating again.",
+                )
             return
 
         self._render_quiz(items)
@@ -3025,7 +3025,7 @@ class MainWindow(QMainWindow):
             return
 
         quiz = self.database.get_latest_quiz(audio_id=audio_id)
-        self._set_quiz_content(str(quiz.get("content", "")) if quiz else "")
+        self._set_quiz_content(str(quiz.get("content", "")) if quiz else "", silent=True)
 
     def _refresh_audio_combos(self) -> None:
         audios = self.database.list_audios()

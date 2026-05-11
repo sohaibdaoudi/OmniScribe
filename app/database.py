@@ -41,6 +41,17 @@ CREATE TABLE IF NOT EXISTS notes (
     created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
     FOREIGN KEY(audio_id) REFERENCES audios(id) ON DELETE CASCADE
 );
+
+CREATE TABLE IF NOT EXISTS quizzes (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    audio_id INTEGER NOT NULL,
+    num_questions INTEGER NOT NULL,
+    focus TEXT NULL,
+    difficulty TEXT NULL,
+    content TEXT NOT NULL,
+    created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY(audio_id) REFERENCES audios(id) ON DELETE CASCADE
+);
 """
 
 
@@ -160,6 +171,26 @@ class Database:
             connection.commit()
             return int(cursor.lastrowid)
 
+    def add_quiz(
+        self,
+        *,
+        audio_id: int,
+        num_questions: int,
+        focus: str | None,
+        difficulty: str | None,
+        content: str,
+    ) -> int:
+        query = """
+        INSERT INTO quizzes (audio_id, num_questions, focus, difficulty, content)
+        VALUES (?, ?, ?, ?, ?)
+        """
+        with self._connect() as connection:
+            cursor = connection.execute(
+                query, (audio_id, num_questions, focus, difficulty, content)
+            )
+            connection.commit()
+            return int(cursor.lastrowid)
+
     def get_latest_note(self, audio_id: int, mode: str | None = None) -> dict[str, Any] | None:
         query = """
         SELECT id, audio_id, mode, content, created_at
@@ -173,6 +204,32 @@ class Database:
 
         query += " ORDER BY created_at DESC, id DESC LIMIT 1"
 
+        with self._connect() as connection:
+            row = connection.execute(query, tuple(params)).fetchone()
+        return dict(row) if row else None
+
+    def get_latest_quiz(
+        self,
+        *,
+        audio_id: int,
+        difficulty: str | None = None,
+        num_questions: int | None = None,
+    ) -> dict[str, Any] | None:
+        query = """
+        SELECT id, audio_id, num_questions, focus, difficulty, content, created_at
+        FROM quizzes
+        WHERE audio_id = ?
+        """
+        params: list[Any] = [audio_id]
+
+        if difficulty is not None:
+            query += " AND difficulty = ?"
+            params.append(difficulty)
+        if num_questions is not None:
+            query += " AND num_questions = ?"
+            params.append(num_questions)
+
+        query += " ORDER BY created_at DESC, id DESC LIMIT 1"
         with self._connect() as connection:
             row = connection.execute(query, tuple(params)).fetchone()
         return dict(row) if row else None

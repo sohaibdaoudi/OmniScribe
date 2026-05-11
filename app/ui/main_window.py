@@ -257,6 +257,8 @@ class AttachmentChip(QFrame):
             return "AUD"
 
         ext = Path(self.file_path).suffix.lower()
+        if ext in {".png", ".jpg", ".jpeg", ".bmp", ".tiff"}:
+            return "IMG"
         if ext == ".pdf":
             return "PDF"
         if ext in {".doc", ".docx"}:
@@ -1892,7 +1894,7 @@ class MainWindow(QMainWindow):
             self,
             "Select documents",
             "",
-            "Documents (*.pdf *.txt *.docx *.md);;All Files (*)",
+            "Supported Documents (*.pdf *.txt *.docx *.md *.png *.jpg *.jpeg *.bmp *.tiff);;All Files (*)",
         )
         if not paths:
             return
@@ -1907,7 +1909,7 @@ class MainWindow(QMainWindow):
             self,
             "Select documents",
             "",
-            "Documents (*.pdf *.txt *.docx *.md);;All Files (*)",
+            "Supported Documents (*.pdf *.txt *.docx *.md *.png *.jpg *.jpeg *.bmp *.tiff);;All Files (*)",
         )
         if not paths:
             return

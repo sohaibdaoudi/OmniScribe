@@ -57,6 +57,15 @@ OmniScribe is a desktop app for converting lecture audio and supporting document
 - uv installed
 - Groq API key
 
+### OCR Capabilities
+
+OmniScribe can read text from scanned PDFs and images using **EasyOCR**, a Python‑based OCR engine.
+
+- On first use, EasyOCR automatically downloads its recognition models (~500 MB) to `~/.EasyOCR/` – no separate installation required.
+- PDFs are processed using **PyMuPDF** (no need for Poppler).
+- Supported image formats: PNG, JPG, JPEG, BMP, TIFF.
+- Scanned PDFs are automatically detected and fall back to OCR.
+
 ## Setup
 
 1. Install dependencies:

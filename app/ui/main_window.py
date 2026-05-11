@@ -1,13 +1,36 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, Optional
 from app.ui.workers import TranscriptionWorker
 
-from PyQt6.QtCore import Qt, QThread, QTimer, QSize, QPointF, pyqtSignal, QElapsedTimer
+from PyQt6.QtCore import (
+    Qt,
+    QThread,
+    QTimer,
+    QSize,
+    QPointF,
+    pyqtSignal,
+    QElapsedTimer,
+    QUrl,
+    QDateTime,
+)
 from PyQt6.QtGui import QCloseEvent, QColor, QPalette, QFont, QIcon, QPainter, QPen
+
+from PyQt6.QtMultimedia import (
+    QMediaPlayer,
+    QAudioOutput,
+    QMediaRecorder,
+    QMediaCaptureSession,
+    QAudioInput,
+    QMediaDevices,
+    QMediaFormat,
+)
+from PyQt6.QtMultimediaWidgets import QVideoWidget
 from PyQt6.QtWidgets import (
     QAbstractItemView,
+    QButtonGroup,
+    QCheckBox,
     QComboBox,
     QFileDialog,
     QFrame,
@@ -31,6 +54,7 @@ from PyQt6.QtWidgets import (
     QProgressBar,
     QTextEdit,
     QHeaderView,
+    QSlider,
 )
 
 
@@ -42,6 +66,7 @@ from app.services.notes_service import (
     NOTE_MODE_REFORMULATED,
     NotesService,
 )
+from app.services.quiz_service import QuizService
 from app.services.rag_service import RagService
 from app.services.transcription_service import TranscriptionService
 from app.ui.workers import FunctionWorker
@@ -235,6 +260,8 @@ class AttachmentChip(QFrame):
             return "AUD"
 
         ext = Path(self.file_path).suffix.lower()
+        if ext in {".png", ".jpg", ".jpeg", ".bmp", ".tiff"}:
+            return "IMG"
         if ext == ".pdf":
             return "PDF"
         if ext in {".doc", ".docx"}:
@@ -589,6 +616,7 @@ class MainWindow(QMainWindow):
         transcription_service: TranscriptionService,
         document_service: DocumentService,
         notes_service: NotesService,
+        quiz_service: QuizService,
         rag_service: RagService,
         api_status_service: ApiStatusService,
     ) -> None:
@@ -597,8 +625,27 @@ class MainWindow(QMainWindow):
         self.transcription_service = transcription_service
         self.document_service = document_service
         self.notes_service = notes_service
+        self.quiz_service = quiz_service
         self.rag_service = rag_service
         self.api_status_service = api_status_service
+
+        # Audio player references
+        self.audio_player = None
+        self.audio_output = None
+        self.play_pause_btn = None
+        self.position_slider = None
+        self.time_label_player = None
+
+        # Recording members
+        self.recorder = None
+        self.capture_session = None
+        self.recorded_file_path = None
+        self.recording_elapsed_timer = None
+        self.recording_timer = None
+        self.rec_device_combo = None
+        self.available_audio_inputs = []
+
+        self.selected_audio_device = None
 
         self._active_workers: list[tuple[QThread, FunctionWorker]] = []
 
@@ -610,6 +657,11 @@ class MainWindow(QMainWindow):
         self._documents_cache: dict[int, dict[str, Any]] = {}
         self._documents_row_cache: dict[int, dict[str, Any]] = {}
         self._nav_items: list[NavItem] = []
+
+        # Quiz UI state
+        self._quiz_items: list[dict[str, Any]] = []
+        self._quiz_answer_groups: list[QButtonGroup] = []
+        self._quiz_result_labels: list[QLabel] = []
 
         # New spinner and real progress timers
         self._spinner_timer = None
@@ -676,7 +728,8 @@ class MainWindow(QMainWindow):
         self.stack.addWidget(self._build_audio_page())  # 0
         self.stack.addWidget(self._build_documents_page())  # 1
         self.stack.addWidget(self._build_notes_page())  # 2
-        self.stack.addWidget(self._build_chat_page())  # 3
+        self.stack.addWidget(self._build_quiz_page())  # 3
+        self.stack.addWidget(self._build_chat_page())  # 4
         root_layout.addWidget(self.stack, 1)
 
         self.setCentralWidget(root)
@@ -738,6 +791,7 @@ class MainWindow(QMainWindow):
             ("♪", "Audio", "3"),
             ("🗎", "Documents", "7"),
             ("📋", "Notes", ""),
+            ("❓", "Quiz", ""),
             ("🗫", "AI Chat", ""),
         ]
         for icon, label, badge in items:
@@ -936,14 +990,24 @@ class MainWindow(QMainWindow):
             )
         )
 
-        # Sub-tabs
-        sub_stack = QStackedWidget()
-        sub_stack.setStyleSheet(f"background: {BG0};")
-        sub_stack.addWidget(self._build_audio_upload_sub())
-        sub_stack.addWidget(self._build_audio_transcripts_sub())
-        lay.addWidget(self._make_subtab_bar(["Upload", "Transcripts"], sub_stack))
-        lay.addWidget(sub_stack, 1)
+        # Sub-tabs (store reference for later switching)
+        self.audio_sub_stack = QStackedWidget()
+        self.audio_sub_stack.currentChanged.connect(self._on_audio_subtab_changed)
+        self.audio_sub_stack.setStyleSheet(f"background: {BG0};")
+        self.audio_sub_stack.addWidget(self._build_audio_upload_sub())  # index 0
+        self.audio_sub_stack.addWidget(self._build_audio_record_sub())  # index 1 (new)
+        self.audio_sub_stack.addWidget(self._build_audio_transcripts_sub())  # index 2
+        lay.addWidget(
+            self._make_subtab_bar(
+                ["Upload", "Record", "Transcripts"], self.audio_sub_stack
+            )
+        )
+        lay.addWidget(self.audio_sub_stack, 1)
         return page
+
+    def _on_audio_subtab_changed(self, index: int) -> None:
+        if index == 1:  # Record tab
+            self._refresh_audio_inputs()
 
     def _build_audio_upload_sub(self) -> QWidget:
         scroll = QScrollArea()
@@ -1070,6 +1134,116 @@ class MainWindow(QMainWindow):
         scroll.setWidget(inner)
         return scroll
 
+    def _build_audio_record_sub(self) -> QWidget:
+        """Sub-tab for in-app microphone recording."""
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("background: transparent; border: none;")
+
+        inner = QWidget()
+        inner.setStyleSheet(f"background: {BG0};")
+        lay = QVBoxLayout(inner)
+        lay.setContentsMargins(24, 24, 24, 24)
+        lay.setSpacing(16)
+
+        # ---- Recording controls panel ----
+        record_panel = QFrame()
+        record_panel.setStyleSheet(f"""
+            QFrame {{
+                background: {BG1};
+                border: 1px solid {BORDER};
+                border-radius: 14px;
+            }}
+        """)
+        panel_layout = QVBoxLayout(record_panel)
+        panel_layout.setContentsMargins(20, 20, 20, 20)
+        panel_layout.setSpacing(14)
+
+        # Title field
+        title_section = QWidget()
+        ts_lay = QVBoxLayout(title_section)
+        ts_lay.setContentsMargins(0, 0, 0, 0)
+        ts_lay.setSpacing(6)
+        ts_lay.addWidget(SectionLabel("Lecture Title (optional)"))
+        self.record_title_input = StyledInput("e.g. Introduction to ML — Lecture 4")
+        ts_lay.addWidget(self.record_title_input)
+        panel_layout.addWidget(title_section)
+
+        # Timer & control buttons row
+        controls_row = QHBoxLayout()
+        controls_row.setSpacing(12)
+
+        self.rec_timer_label = QLabel("00:00")
+        self.rec_timer_label.setStyleSheet(
+            f"color: {TEXT}; font-size: 36px; font-weight: 600; font-family: monospace;"
+        )
+        self.rec_timer_label.setFixedWidth(120)
+
+        self.record_start_btn = StyledButton("Start Recording", primary=True)
+        self.record_start_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.record_start_btn.clicked.connect(self._start_recording)
+
+        self.record_stop_btn = StyledButton("Stop Recording")
+        self.record_stop_btn.setEnabled(False)
+        self.record_stop_btn.clicked.connect(self._stop_recording)
+
+        controls_row.addWidget(self.rec_timer_label)
+        controls_row.addStretch()
+        controls_row.addWidget(self.record_start_btn)
+        controls_row.addWidget(self.record_stop_btn)
+        panel_layout.addLayout(controls_row)
+
+        # Status / error label
+        self.rec_status_label = MonoLabel("Ready", TEXT3)
+        panel_layout.addWidget(self.rec_status_label)
+
+        # Device selector
+        device_row = QHBoxLayout()
+        device_row.setSpacing(8)
+        device_row.addWidget(SectionLabel("Microphone"))
+        self.rec_device_combo = StyledCombo()
+        self.rec_device_combo.currentIndexChanged.connect(self._on_rec_device_changed)
+        device_row.addWidget(self.rec_device_combo, 1)
+        panel_layout.addLayout(device_row)
+
+        lay.addWidget(record_panel)
+        # Progress widget (same as upload tab)
+        self.record_progress_widget = QWidget()
+        self.record_progress_widget.setStyleSheet(
+            f"background: {ACCENT_S}; border: 1px solid {ACCENT_G}; border-radius: 10px;"
+        )
+        rpw_lay = QHBoxLayout(self.record_progress_widget)
+        rpw_lay.setContentsMargins(14, 10, 14, 10)
+        rpw_lay.setSpacing(12)
+
+        self.record_spinner_label = QLabel("◐")
+        self.record_spinner_label.setStyleSheet(
+            f"color: {ACCENT2}; font-size: 16px; font-family: monospace;"
+        )
+        self.record_spinner_label.setFixedWidth(20)
+
+        self.record_stage_label = QLabel("Preparing…")
+        self.record_stage_label.setStyleSheet(
+            f"color: {ACCENT2}; font-size: 12px; font-family: 'Courier New', monospace;"
+        )
+
+        self.record_time_label = QLabel("0.0s")
+        self.record_time_label.setStyleSheet(
+            f"color: {ACCENT2}; font-size: 12px; font-family: 'Courier New', monospace;"
+        )
+        self.record_time_label.setFixedWidth(50)
+
+        rpw_lay.addWidget(self.record_spinner_label)
+        rpw_lay.addWidget(self.record_stage_label, 1)
+        rpw_lay.addWidget(self.record_time_label)
+
+        self.record_progress_widget.hide()
+        lay.addWidget(self.record_progress_widget)
+
+        lay.addStretch()
+        scroll.setWidget(inner)
+        return scroll
+
     def _build_audio_transcripts_sub(self) -> QWidget:
         widget = QWidget()
         widget.setStyleSheet(f"background: {BG0};")
@@ -1077,7 +1251,7 @@ class MainWindow(QMainWindow):
         lay.setContentsMargins(24, 18, 24, 18)
         lay.setSpacing(14)
 
-        # Selector
+        # Selector row
         selector_row = QHBoxLayout()
         selector_row.setSpacing(10)
         lbl = QLabel("Session")
@@ -1093,7 +1267,52 @@ class MainWindow(QMainWindow):
         selector_row.addWidget(self.audio_selector_combo, 1)
         lay.addLayout(selector_row)
 
-        # Two panels
+        # --- NEW: Audio player widget ---
+        player_widget = QWidget()
+        player_widget.setStyleSheet(f"background: {BG2}; border-radius: 12px;")
+        player_layout = QHBoxLayout(player_widget)
+        player_layout.setContentsMargins(12, 8, 12, 8)
+
+        self.play_pause_btn = QPushButton("▶")
+        self.play_pause_btn.setFixedSize(32, 32)
+        self.play_pause_btn.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.play_pause_btn.setEnabled(False)
+        self.play_pause_btn.setStyleSheet(f"""
+            QPushButton {{
+                background: {ACCENT}; color: white; border: none; border-radius: 16px;
+                font-size: 14px;
+            }}
+            QPushButton:hover {{ background: {ACCENT2}; }}
+            QPushButton:disabled {{ background: {BG3}; color: {TEXT3}; }}
+        """)
+        self.play_pause_btn.clicked.connect(self._toggle_audio_playback)
+
+        self.position_slider = QSlider(Qt.Orientation.Horizontal)
+        self.position_slider.setRange(0, 1000)
+        self.position_slider.setEnabled(False)
+        self.position_slider.sliderMoved.connect(self._seek_audio)
+
+        self.time_label_player = QLabel("00:00 / 00:00")
+        self.time_label_player.setStyleSheet(
+            f"color: {TEXT3}; font-size: 11px; font-family: 'Courier New', monospace;"
+        )
+
+        player_layout.addWidget(self.play_pause_btn)
+        player_layout.addWidget(self.position_slider, 1)
+        player_layout.addWidget(self.time_label_player)
+
+        lay.addWidget(player_widget)
+
+        # Initialize media player
+        self.audio_output = QAudioOutput()
+        self.audio_player = QMediaPlayer()
+        self.audio_player.setAudioOutput(self.audio_output)
+        self.audio_player.errorOccurred.connect(self._handle_player_error)
+        self.audio_player.positionChanged.connect(self._update_position)
+        self.audio_player.durationChanged.connect(self._update_duration)
+        self.audio_player.playbackStateChanged.connect(self._update_play_button)
+
+        # Two panels row
         panels_row = QHBoxLayout()
         panels_row.setSpacing(14)
 
@@ -1119,6 +1338,203 @@ class MainWindow(QMainWindow):
 
         lay.addLayout(panels_row, 1)
         return widget
+
+    # ----------------------------------------------------------------------
+    # Recording logic
+    # ----------------------------------------------------------------------
+    def _init_recorder(self) -> None:
+        """Set up a brand new QMediaRecorder and capture session."""
+        # Force recreate every time to avoid stale state
+        if self.recorder:
+            self.recorder.deleteLater()
+            self.recorder = None
+        if self.capture_session:
+            self.capture_session.deleteLater()
+            self.capture_session = None
+
+        self.capture_session = QMediaCaptureSession()
+
+        # Get the selected device (or default if combo not ready).
+        # IMPORTANT: store as self._audio_input — on Linux/GStreamer, a local variable
+        # gets garbage-collected by Python before the capture session retains it,
+        # causing "No audio input device in capture session" errors.
+        if self.selected_audio_device is not None:
+            self._audio_input = QAudioInput(self.selected_audio_device)
+            if self._audio_input.device().isNull():
+                print("WARNING: Selected device is not usable, falling back to default")
+                self._audio_input = QAudioInput(QMediaDevices.defaultAudioInput())
+        else:
+            self._audio_input = QAudioInput(QMediaDevices.defaultAudioInput())
+
+        self.capture_session.setAudioInput(self._audio_input)
+
+        self.recorder = QMediaRecorder()
+        self.capture_session.setRecorder(self.recorder)
+
+        fmt = QMediaFormat()
+        fmt.setFileFormat(QMediaFormat.FileFormat.Wave)
+        self.recorder.setMediaFormat(fmt)
+
+        self.recorder.recorderStateChanged.connect(self._on_recorder_state_changed)
+        self.recorder.durationChanged.connect(self._on_recording_duration_changed)
+        self.recorder.errorOccurred.connect(self._on_recorder_error)
+
+    def _start_recording(self) -> None:
+        self._init_recorder()
+        if not self.recorder:
+            return
+
+        # Debug: show which device is actually being used
+        audio_input = self.capture_session.audioInput()
+        if audio_input:
+            device = audio_input.device()
+            print(f"Using audio device: {device.description()} (id: {device.id()})")
+        else:
+            print("ERROR: No audio input device in capture session")
+            self.rec_status_label.setText(
+                "No audio input set. Check microphone selection."
+            )
+            return
+
+        # Create a unique filename in audio storage directory
+        timestamp = QDateTime.currentDateTime().toString("yyyyMMdd_hhmmss")
+        filename = f"recording_{timestamp}.wav"
+        file_path = self.transcription_service.audio_storage_dir / filename
+        self.recorded_file_path = str(file_path)
+
+        self.recorder.setOutputLocation(QUrl.fromLocalFile(self.recorded_file_path))
+
+        # Attempt to start recording
+        try:
+            self.recorder.record()
+        except Exception as e:
+            self.rec_status_label.setText(f"Failed to start recording: {e}")
+            QMessageBox.warning(self, "Recording Error", str(e))
+
+    def _stop_recording(self) -> None:
+        """Stop the active recording."""
+        if (
+            self.recorder
+            and self.recorder.recorderState()
+            == QMediaRecorder.RecorderState.RecordingState
+        ):
+            self.recorder.stop()
+
+    def _on_recorder_state_changed(self, state: QMediaRecorder.RecorderState) -> None:
+        if state == QMediaRecorder.RecorderState.RecordingState:
+            self.record_start_btn.setEnabled(False)
+            self.record_stop_btn.setEnabled(True)
+            self.start_pipeline_button.setEnabled(
+                False
+            )  # disable Transcribe while recording
+            self.rec_status_label.setText("Recording...")
+            self.recording_elapsed_timer = QElapsedTimer()
+            self.recording_elapsed_timer.start()
+            self.recording_timer = QTimer()
+            self.recording_timer.timeout.connect(self._update_recording_timer)
+            self.recording_timer.start(100)
+            self.rec_timer_label.setText("00:00")
+        elif state == QMediaRecorder.RecorderState.StoppedState:
+            self.record_start_btn.setEnabled(True)
+            self.record_stop_btn.setEnabled(False)
+            if self.recording_timer:
+                self.recording_timer.stop()
+            if self.recorded_file_path and not Path(self.recorded_file_path).exists():
+                self.rec_status_label.setText("Error: recording file not saved.")
+                self.start_pipeline_button.setEnabled(False)
+            else:
+                self.rec_status_label.setText(
+                    "Recording finished. Click 'Transcribe' above."
+                )
+                self.start_pipeline_button.setEnabled(
+                    True
+                )  # enable top Transcribe button
+        elif state == QMediaRecorder.RecorderState.PausedState:
+            pass
+
+    def _update_recording_timer(self) -> None:
+        if self.recording_elapsed_timer and self.recording_elapsed_timer.isValid():
+            elapsed_ms = self.recording_elapsed_timer.elapsed()
+            seconds = elapsed_ms // 1000
+            minutes = seconds // 60
+            seconds = seconds % 60
+            self.rec_timer_label.setText(f"{minutes:02d}:{seconds:02d}")
+
+    def _on_recording_duration_changed(self, duration: int) -> None:
+        # Duration in milliseconds – we already have our own timer, but can keep for accuracy
+        pass
+
+    def _on_recorder_error(
+        self, error: QMediaRecorder.Error, error_string: str
+    ) -> None:
+        if error != QMediaRecorder.Error.NoError:
+            self.rec_status_label.setText(f"Recorder error: {error_string}")
+            self.record_start_btn.setEnabled(True)
+            self.record_stop_btn.setEnabled(False)
+            self.start_pipeline_button.setEnabled(False)
+            if self.recording_timer:
+                self.recording_timer.stop()
+
+    def _transcribe_recorded_audio(self) -> None:
+        if not self.recorded_file_path or not Path(self.recorded_file_path).exists():
+            QMessageBox.warning(self, "No recording", "No valid recording found.")
+            return
+        title = self.record_title_input.text().strip()
+        self._process_audio_with_pipeline(
+            audio_path=self.recorded_file_path,
+            title=title,
+            doc_paths=[],
+        )
+
+    def _refresh_audio_inputs(self) -> None:
+        """Refresh the list of available audio input devices."""
+        self.available_audio_inputs = QMediaDevices.audioInputs()
+        if not self.available_audio_inputs:
+            self.rec_status_label.setText(
+                "No microphone found. Check system settings and ensure a recording device is available."
+            )
+            self.record_start_btn.setEnabled(False)
+            self.record_stop_btn.setEnabled(False)
+            self.transcribe_recording_btn.setEnabled(False)
+            if hasattr(self, "rec_device_combo"):
+                self.rec_device_combo.clear()
+                self.rec_device_combo.addItem("No devices", None)
+            return
+
+        self.record_start_btn.setEnabled(True)
+
+        # Populate combo box
+        if hasattr(self, "rec_device_combo"):
+            self.rec_device_combo.blockSignals(True)
+            self.rec_device_combo.clear()
+            for i, dev in enumerate(self.available_audio_inputs):
+                test_input = QAudioInput(dev)
+                if test_input.device().isNull():
+                    continue  # skip this device
+                description = dev.description().strip()
+                if not description:
+                    description = f"Device {i+1}"
+                self.rec_device_combo.addItem(description, i)
+            self.rec_device_combo.blockSignals(False)
+            # Select default device
+            default_idx = 0
+            default_dev = QMediaDevices.defaultAudioInput()
+            if default_dev:
+                for i, dev in enumerate(self.available_audio_inputs):
+                    if dev == default_dev:
+                        default_idx = i
+                        break
+            self.rec_device_combo.setCurrentIndex(default_idx)
+            self._on_rec_device_changed(default_idx)
+
+    def _on_rec_device_changed(self, idx: int) -> None:
+        if idx < 0 or not self.available_audio_inputs:
+            self.selected_audio_device = None
+            return
+        self.selected_audio_device = self.available_audio_inputs[idx]
+        self.rec_status_label.setText(
+            f"Microphone: {self.selected_audio_device.description()}"
+        )
 
     # ── DOCUMENTS PAGE ────────────────────────────────────────────────────────
 
@@ -1296,6 +1712,396 @@ class MainWindow(QMainWindow):
 
         lay.addWidget(content, 1)
         return page
+
+    # ── QUIZ PAGE ────────────────────────────────────────────────────────────
+
+    def _build_quiz_page(self) -> QWidget:
+        page = QWidget()
+        page.setStyleSheet(f"background: {BG0};")
+        lay = QVBoxLayout(page)
+        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setSpacing(0)
+
+        self.quiz_audio_combo = StyledCombo()
+
+        self.quiz_question_count_combo = StyledCombo()
+        for n in (5, 10, 15):
+            self.quiz_question_count_combo.addItem(f"{n} questions", n)
+
+        self.quiz_difficulty_combo = StyledCombo()
+        self.quiz_difficulty_combo.addItem("Mixed", "mixed")
+        self.quiz_difficulty_combo.addItem("Easy", "easy")
+        self.quiz_difficulty_combo.addItem("Medium", "medium")
+        self.quiz_difficulty_combo.addItem("Hard", "hard")
+
+        load_btn = StyledButton("Load Latest")
+        load_btn.clicked.connect(self._load_latest_quiz)
+        self.load_latest_quiz_button = load_btn
+
+        gen_btn = StyledButton("Generate Quiz", primary=True)
+        gen_btn.clicked.connect(self._generate_quiz)
+        self.generate_quiz_button = gen_btn
+
+        lay.addWidget(
+            self._make_topbar(
+                "Quizzes",
+                "AI practice questions + answer key",
+                [
+                    self.quiz_audio_combo,
+                    self.quiz_question_count_combo,
+                    self.quiz_difficulty_combo,
+                    load_btn,
+                    gen_btn,
+                ],
+            )
+        )
+
+        content = QWidget()
+        content.setStyleSheet(f"background: {BG0};")
+        c_lay = QVBoxLayout(content)
+        c_lay.setContentsMargins(24, 18, 24, 18)
+        c_lay.setSpacing(14)
+
+        focus_section = QWidget()
+        focus_section.setStyleSheet("background: transparent;")
+        fs_lay = QVBoxLayout(focus_section)
+        fs_lay.setContentsMargins(0, 0, 0, 0)
+        fs_lay.setSpacing(6)
+        fs_lay.addWidget(SectionLabel("Focus Topic (optional)"))
+        self.quiz_focus_input = StyledInput(
+            "e.g. backpropagation, SQL joins, photosynthesis"
+        )
+        fs_lay.addWidget(self.quiz_focus_input)
+        c_lay.addWidget(focus_section)
+
+        quiz_panel = PanelFrame("quiz", "interactive", tag_live=True)
+        quiz_panel.body_layout().setSpacing(10)
+
+        header_row = QWidget()
+        header_row.setStyleSheet("background: transparent;")
+        hr_lay = QHBoxLayout(header_row)
+        hr_lay.setContentsMargins(0, 0, 0, 0)
+        hr_lay.setSpacing(10)
+
+        self.quiz_score_label = MonoLabel("Not submitted")
+        self.quiz_score_label.setStyleSheet(
+            f"color: {TEXT3}; font-family: 'Courier New', monospace; font-size: 11px;"
+        )
+        hr_lay.addWidget(self.quiz_score_label)
+        hr_lay.addStretch()
+
+        self.quiz_submit_button = StyledButton("Submit", primary=True)
+        self.quiz_submit_button.setEnabled(False)
+        self.quiz_submit_button.clicked.connect(self._submit_quiz_answers)
+        hr_lay.addWidget(self.quiz_submit_button)
+
+        quiz_panel.body_layout().addWidget(header_row)
+
+        self.quiz_scroll = QScrollArea()
+        self.quiz_scroll.setWidgetResizable(True)
+        self.quiz_scroll.setStyleSheet(
+            f"QScrollArea {{ background: transparent; border: none; }}"
+        )
+
+        self.quiz_container = QWidget()
+        self.quiz_container.setStyleSheet("background: transparent;")
+        self.quiz_container_layout = QVBoxLayout(self.quiz_container)
+        self.quiz_container_layout.setContentsMargins(0, 0, 0, 0)
+        self.quiz_container_layout.setSpacing(10)
+        self.quiz_container_layout.addStretch()
+        self.quiz_scroll.setWidget(self.quiz_container)
+
+        quiz_panel.body_layout().addWidget(self.quiz_scroll, 1)
+        c_lay.addWidget(quiz_panel, 1)
+
+        lay.addWidget(content, 1)
+        return page
+
+    # ── QUIZ parsing + interactive rendering ─────────────────────────────────
+
+    def _parse_quiz_markdown(self, content: str) -> list[dict[str, Any]]:
+        """Parse the quiz markdown into a structured list.
+
+        Returns items of shape:
+        {"number": int, "question": str, "options": {"A": str, ...}, "answer": "A"|...|None, "explanation": str|None}
+        """
+
+        text = (content or "").strip()
+        if not text:
+            return []
+
+        # Unwrap fenced markdown if present.
+        for _ in range(2):
+            lines = text.splitlines()
+            if (
+                len(lines) >= 2
+                and lines[0].strip().startswith("```")
+                and lines[-1].strip() == "```"
+            ):
+                text = "\n".join(lines[1:-1]).strip()
+            else:
+                break
+
+        import re
+
+        # Split questions vs answer key.
+        answer_key_match = re.search(r"^\s*#{0,3}\s*Answer\s*Key\b.*$", text, flags=re.IGNORECASE | re.MULTILINE)
+        if answer_key_match:
+            questions_part = text[: answer_key_match.start()].strip()
+            answers_part = text[answer_key_match.end() :].strip()
+        else:
+            # Some models use "Answers".
+            alt = re.search(r"^\s*#{0,3}\s*Answers\b.*$", text, flags=re.IGNORECASE | re.MULTILINE)
+            if alt:
+                questions_part = text[: alt.start()].strip()
+                answers_part = text[alt.end() :].strip()
+            else:
+                questions_part = text
+                answers_part = ""
+
+        # Parse answer key lines.
+        answers: dict[int, dict[str, str | None]] = {}
+        if answers_part:
+            for line in answers_part.splitlines():
+                raw = line.strip()
+                if not raw:
+                    continue
+                m = re.match(
+                    r"^\s*(?:Q\s*)?(\d{1,3})\s*[-\)\.:]*\s*([A-D])\b(?:\s*[-–—:]+\s*(.*))?$",
+                    raw,
+                    flags=re.IGNORECASE,
+                )
+                if not m:
+                    continue
+                qn = int(m.group(1))
+                letter = m.group(2).upper()
+                expl = (m.group(3) or "").strip() or None
+                answers[qn] = {"answer": letter, "explanation": expl}
+
+        # Parse questions + options.
+        items: list[dict[str, Any]] = []
+        current: dict[str, Any] | None = None
+
+        q_start = re.compile(r"^\s*(\d{1,3})\s*[\)\.:]\s+(.*)$")
+        opt = re.compile(r"^\s*(?:[-*]\s*)?([A-D])\s*[\)\.:]\s+(.*)$", flags=re.IGNORECASE)
+
+        def flush() -> None:
+            nonlocal current
+            if not current:
+                return
+            # Normalize question text.
+            q_text = " ".join([s.strip() for s in current.get("question_lines", []) if s.strip()]).strip()
+            current["question"] = q_text
+            current.pop("question_lines", None)
+
+            # Attach answer key if present.
+            qn = int(current["number"])
+            ans = answers.get(qn)
+            if ans:
+                current["answer"] = ans.get("answer")
+                current["explanation"] = ans.get("explanation")
+            else:
+                current["answer"] = None
+                current["explanation"] = None
+
+            items.append(current)
+            current = None
+
+        for line in questions_part.splitlines():
+            raw = line.rstrip()
+            if not raw.strip():
+                # Keep paragraph breaks inside question text.
+                if current and current.get("question_lines"):
+                    current["question_lines"].append("")
+                continue
+
+            m_q = q_start.match(raw)
+            if m_q:
+                flush()
+                qn = int(m_q.group(1))
+                q_text = m_q.group(2).strip()
+                current = {
+                    "number": qn,
+                    "question_lines": [q_text],
+                    "options": {},
+                }
+                continue
+
+            m_o = opt.match(raw)
+            if m_o and current is not None:
+                letter = m_o.group(1).upper()
+                txt = m_o.group(2).strip()
+                current["options"][letter] = txt
+                continue
+
+            # Non-matching line: treat as part of question stem.
+            if current is not None:
+                current["question_lines"].append(raw.strip())
+
+        flush()
+
+        # Basic sanity: only keep questions with A-D options.
+        normalized: list[dict[str, Any]] = []
+        for it in items:
+            opts = it.get("options") or {}
+            if all(k in opts for k in ("A", "B", "C", "D")):
+                normalized.append(it)
+
+        return normalized
+
+    def _clear_quiz_widgets(self) -> None:
+        if not hasattr(self, "quiz_container_layout"):
+            return
+        while self.quiz_container_layout.count():
+            item = self.quiz_container_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+            elif item.layout():
+                sub = item.layout()
+                while sub.count():
+                    s = sub.takeAt(0)
+                    if s.widget():
+                        s.widget().deleteLater()
+                sub.deleteLater()
+        self.quiz_container_layout.addStretch()
+
+        self._quiz_items = []
+        self._quiz_answer_groups = []
+        self._quiz_result_labels = []
+
+    def _render_quiz(self, items: list[dict[str, Any]]) -> None:
+        self._clear_quiz_widgets()
+
+        if not items:
+            empty = QLabel("No quiz loaded yet. Generate one to begin.")
+            empty.setStyleSheet(
+                f"color: {TEXT3}; font-size: 12px; background: transparent; border: none;"
+            )
+            self.quiz_container_layout.insertWidget(0, empty)
+            self.quiz_submit_button.setEnabled(False)
+            self.quiz_score_label.setText("Not submitted")
+            return
+
+        self._quiz_items = items
+        self.quiz_submit_button.setEnabled(True)
+        self.quiz_submit_button.setText("Submit")
+        self.quiz_score_label.setText("Not submitted")
+
+        for idx, it in enumerate(items):
+            qn = int(it.get("number", idx + 1))
+            stem = str(it.get("question", "")).strip()
+            options: dict[str, str] = dict(it.get("options") or {})
+
+            card = QFrame()
+            card.setStyleSheet(
+                f"QFrame {{ background: {BG2}; border: 1px solid {BORDER}; border-radius: 12px; }}"
+            )
+            cl = QVBoxLayout(card)
+            cl.setContentsMargins(14, 12, 14, 12)
+            cl.setSpacing(8)
+
+            title = QLabel(f"{qn}. {stem}")
+            title.setWordWrap(True)
+            title.setStyleSheet(
+                f"color: {TEXT}; font-size: 13.5px; font-weight: 600; background: transparent; border: none;"
+            )
+            cl.addWidget(title)
+
+            group = QButtonGroup(card)
+            group.setExclusive(True)
+            self._quiz_answer_groups.append(group)
+
+            for letter in ("A", "B", "C", "D"):
+                cb = QCheckBox(f"{letter}. {options.get(letter, '')}")
+                cb.setCursor(Qt.CursorShape.PointingHandCursor)
+                cb.setStyleSheet(
+                    f"QCheckBox {{ color: {TEXT2}; font-size: 13px; background: transparent; padding: 2px 0; }}"
+                    f"QCheckBox:hover {{ color: {TEXT}; }}"
+                    f"QCheckBox::indicator {{ width: 14px; height: 14px; }}"
+                )
+                group.addButton(cb)
+                cb.setProperty("answer_letter", letter)
+                cl.addWidget(cb)
+
+            result = QLabel("")
+            result.setWordWrap(True)
+            result.setStyleSheet(
+                f"color: {TEXT3}; font-size: 12px; background: transparent; border: none;"
+            )
+            result.hide()
+            self._quiz_result_labels.append(result)
+            cl.addWidget(result)
+
+            self.quiz_container_layout.insertWidget(self.quiz_container_layout.count() - 1, card)
+
+    def _set_quiz_content(self, content: str) -> None:
+        items = self._parse_quiz_markdown(content)
+        if not items:
+            # Avoid leaking the answer key by showing raw markdown.
+            self._render_quiz([])
+            QMessageBox.warning(
+                self,
+                "Quiz format",
+                "The generated quiz couldn't be parsed into interactive questions. Try generating again.",
+            )
+            return
+
+        self._render_quiz(items)
+
+    def _submit_quiz_answers(self) -> None:
+        if not self._quiz_items:
+            return
+
+        # Collect selections.
+        selections: list[str | None] = []
+        for group in self._quiz_answer_groups:
+            btn = group.checkedButton()
+            if btn is None:
+                selections.append(None)
+            else:
+                selections.append(str(btn.property("answer_letter") or "").strip() or None)
+
+        if any(s is None for s in selections):
+            QMessageBox.warning(self, "Incomplete", "Answer all questions before submitting.")
+            return
+
+        total = len(self._quiz_items)
+        correct = 0
+        for idx, (item, chosen) in enumerate(zip(self._quiz_items, selections)):
+            correct_letter = (item.get("answer") or "").strip().upper() or None
+            explanation = (item.get("explanation") or "").strip() or None
+
+            is_correct = correct_letter is not None and chosen == correct_letter
+            if is_correct:
+                correct += 1
+
+            result = self._quiz_result_labels[idx]
+            if correct_letter is None:
+                msg = "Submitted. (No answer key found for this question.)"
+                color = TEXT3
+            else:
+                if is_correct:
+                    msg = "Correct."
+                    color = GREEN
+                else:
+                    msg = f"Incorrect. Correct answer: {correct_letter}."
+                    color = RED
+                if explanation:
+                    msg = f"{msg} {explanation}"
+
+            result.setText(msg)
+            result.setStyleSheet(
+                f"color: {color}; font-size: 12px; background: transparent; border: none;"
+            )
+            result.show()
+
+        # Freeze choices after submit.
+        for group in self._quiz_answer_groups:
+            for b in group.buttons():
+                b.setEnabled(False)
+
+        self.quiz_submit_button.setEnabled(False)
+        self.quiz_score_label.setText(f"Score: {correct}/{total}")
 
     # ── CHAT PAGE ─────────────────────────────────────────────────────────────
 
@@ -1490,7 +2296,7 @@ class MainWindow(QMainWindow):
             self,
             "Select documents",
             "",
-            "Documents (*.pdf *.txt *.docx *.md);;All Files (*)",
+            "Supported Documents (*.pdf *.txt *.docx *.md *.png *.jpg *.jpeg *.bmp *.tiff);;All Files (*)",
         )
         if not paths:
             return
@@ -1505,7 +2311,7 @@ class MainWindow(QMainWindow):
             self,
             "Select documents",
             "",
-            "Documents (*.pdf *.txt *.docx *.md);;All Files (*)",
+            "Supported Documents (*.pdf *.txt *.docx *.md *.png *.jpg *.jpeg *.bmp *.tiff);;All Files (*)",
         )
         if not paths:
             return
@@ -1518,26 +2324,46 @@ class MainWindow(QMainWindow):
     # ── Actions ───────────────────────────────────────────────────────────────
 
     def _start_audio_pipeline(self) -> None:
+        # If we're on the Record tab and have a recorded file, use that
+        if (
+            hasattr(self, "audio_sub_stack")
+            and self.audio_sub_stack.currentIndex() == 1
+            and self.recorded_file_path
+            and Path(self.recorded_file_path).exists()
+        ):
+            title = self.record_title_input.text().strip()
+            self._process_audio_with_pipeline(
+                audio_path=self.recorded_file_path,
+                title=title,
+                doc_paths=[],
+            )
+            return
+
+        # Otherwise, normal upload flow
         if not self._selected_audio_path:
             QMessageBox.warning(self, "Missing audio", "Select an audio file first.")
             return
+        self._process_audio_with_pipeline(
+            audio_path=self._selected_audio_path,
+            title=self.audio_title_input.text().strip(),
+            doc_paths=list(self._selected_audio_documents),
+        )
 
-        audio_path = self._selected_audio_path
-        title = self.audio_title_input.text().strip()
-        optional_docs = list(self._selected_audio_documents)
-
+    def _process_audio_with_pipeline(
+        self, audio_path: str, title: str, doc_paths: list[str]
+    ) -> None:
+        """Common logic to start the transcription worker."""
         self.start_pipeline_button.setEnabled(False)
         self.progress_widget.show()
         self._start_pipeline_progress()
         self.statusBar().showMessage("Processing audio and transcription…")
 
-        # Create and run the worker
         self._active_worker_thread = QThread(self)
         self._transcription_worker = TranscriptionWorker(
             transcription_service=self.transcription_service,
             audio_path=audio_path,
             title=title,
-            document_paths=optional_docs,
+            document_paths=doc_paths,
             document_service=self.document_service,
         )
         self._transcription_worker.moveToThread(self._active_worker_thread)
@@ -1554,14 +2380,12 @@ class MainWindow(QMainWindow):
         self._active_worker_thread.start()
 
     def _start_pipeline_progress(self) -> None:
-        # Spinner animation
         self._spinner_index = 0
         self._spinner_timer = QTimer(self)
         self._spinner_timer.setInterval(100)
         self._spinner_timer.timeout.connect(self._update_spinner)
         self._spinner_timer.start()
 
-        # Time tracking
         self._stage_elapsed_timer = QElapsedTimer()
         self._stage_elapsed_timer.start()
         self._time_update_timer = QTimer(self)
@@ -1572,14 +2396,32 @@ class MainWindow(QMainWindow):
         self.stage_label.setText("Preparing…")
         self.time_label.setText("0.0s")
 
+        # Also show on record tab if that's the active sub-tab
+        if (
+            hasattr(self, "audio_sub_stack")
+            and self.audio_sub_stack.currentIndex() == 1
+        ):
+            self.record_stage_label.setText("Preparing…")
+            self.record_time_label.setText("0.0s")
+            self.record_spinner_label.setText("◐")
+            self.record_progress_widget.show()
+        else:
+            self.progress_widget.show()
+
     def _update_spinner(self) -> None:
         self._spinner_index = (self._spinner_index + 1) % len(self._spinner_frames)
-        self.spinner_label.setText(self._spinner_frames[self._spinner_index])
+        frame = self._spinner_frames[self._spinner_index]
+        self.spinner_label.setText(frame)
+        if hasattr(self, "record_spinner_label"):
+            self.record_spinner_label.setText(frame)
 
     def _update_pipeline_time(self) -> None:
         if self._stage_elapsed_timer and self._stage_elapsed_timer.isValid():
             elapsed = self._stage_elapsed_timer.elapsed() / 1000.0
-            self.time_label.setText(f"{elapsed:.1f}s")
+            txt = f"{elapsed:.1f}s"
+            self.time_label.setText(txt)
+            if hasattr(self, "record_time_label"):
+                self.record_time_label.setText(txt)
 
     def _stop_pipeline_progress(self) -> None:
         if self._spinner_timer:
@@ -1589,20 +2431,22 @@ class MainWindow(QMainWindow):
             self._time_update_timer.stop()
             self._time_update_timer = None
         self.progress_widget.hide()
+        if hasattr(self, "record_progress_widget"):
+            self.record_progress_widget.hide()
 
     def _on_transcription_stage(self, stage: str) -> None:
-        # Reset elapsed timer for new stage
         if self._stage_elapsed_timer:
             self._stage_elapsed_timer.restart()
-        # Update stage label
-        if stage == "uploading":
-            self.stage_label.setText("Uploading audio…")
-        elif stage == "transcribing":
-            self.stage_label.setText("Transcribing…")
-        elif stage == "correcting":
-            self.stage_label.setText("Correcting transcript…")
-        else:
-            self.stage_label.setText(stage)
+
+        labels = {
+            "uploading": "Uploading audio…",
+            "transcribing": "Transcribing…",
+            "correcting": "Correcting transcript…",
+        }
+        text = labels.get(stage, stage)
+        self.stage_label.setText(text)
+        if hasattr(self, "record_stage_label"):
+            self.record_stage_label.setText(text)
 
     def _on_transcription_finished(self, audio_id: int) -> None:
         self._stop_pipeline_progress()
@@ -1614,6 +2458,14 @@ class MainWindow(QMainWindow):
         self.audio_title_input.clear()
         self._refresh_attachment_views()
         self._refresh_all()
+
+        # Switch to Transcripts sub-tab and select the new audio
+        if hasattr(self, "audio_sub_stack"):
+            self.audio_sub_stack.setCurrentIndex(2)
+        # Select the newly created audio in the combo
+        index = self.audio_selector_combo.findData(audio_id)
+        if index >= 0:
+            self.audio_selector_combo.setCurrentIndex(index)
 
         self.statusBar().showMessage("Audio processed.")
         QMessageBox.information(
@@ -1764,6 +2616,43 @@ class MainWindow(QMainWindow):
 
         def on_error(msg: str) -> None:
             self.generate_notes_button.setEnabled(True)
+            self._show_error(msg)
+
+        self._run_async(task, on_success, on_error)
+
+    def _generate_quiz(self) -> None:
+        audio_id = self._combo_audio_id(self.quiz_audio_combo)
+        if audio_id is None:
+            QMessageBox.warning(self, "Missing audio", "Select an audio item first.")
+            return
+
+        num_questions_raw = self.quiz_question_count_combo.currentData()
+        try:
+            num_questions = int(num_questions_raw) if num_questions_raw is not None else 10
+        except (TypeError, ValueError):
+            num_questions = 10
+
+        difficulty = str(self.quiz_difficulty_combo.currentData() or "mixed")
+        focus = self.quiz_focus_input.text().strip()
+
+        self.generate_quiz_button.setEnabled(False)
+        self.statusBar().showMessage("Generating quiz…")
+
+        def task() -> str:
+            return self.quiz_service.generate_quiz(
+                audio_id=audio_id,
+                num_questions=num_questions,
+                focus=focus or None,
+                difficulty=difficulty,
+            )
+
+        def on_success(quiz_markdown: str) -> None:
+            self.generate_quiz_button.setEnabled(True)
+            self._set_quiz_markdown(quiz_markdown)
+            self.statusBar().showMessage("Quiz generated.")
+
+        def on_error(msg: str) -> None:
+            self.generate_quiz_button.setEnabled(True)
             self._show_error(msg)
 
         self._run_async(task, on_success, on_error)
@@ -1934,6 +2823,7 @@ class MainWindow(QMainWindow):
         if audio_id is None:
             self.raw_transcript_text.clear()
             self.corrected_transcript_text.clear()
+            self._update_player_for_selected_audio(None)
             return
 
         transcript = self.database.get_transcript_by_audio(audio_id)
@@ -1942,12 +2832,98 @@ class MainWindow(QMainWindow):
             self.corrected_transcript_text.setPlainText(
                 "No corrected transcript available yet."
             )
+        else:
+            self.raw_transcript_text.setPlainText(str(transcript.get("raw_text", "")))
+            self.corrected_transcript_text.setPlainText(
+                str(transcript.get("corrected_text", ""))
+            )
+
+        self._update_player_for_selected_audio(audio_id)
+
+    # Player control methods
+    def _update_player_for_selected_audio(self, audio_id: Optional[int]) -> None:
+        if audio_id is None:
+            self.play_pause_btn.setEnabled(False)
+            self.position_slider.setEnabled(False)
+            self.time_label_player.setText("00:00 / 00:00")
+            if (
+                self.audio_player.playbackState()
+                != QMediaPlayer.PlaybackState.StoppedState
+            ):
+                self.audio_player.stop()
             return
 
-        self.raw_transcript_text.setPlainText(str(transcript.get("raw_text", "")))
-        self.corrected_transcript_text.setPlainText(
-            str(transcript.get("corrected_text", ""))
-        )
+        # Get stored_path from database
+        with self.database._connect() as conn:
+            row = conn.execute(
+                "SELECT stored_path FROM audios WHERE id = ?", (audio_id,)
+            ).fetchone()
+        if not row:
+            self.play_pause_btn.setEnabled(False)
+            self.position_slider.setEnabled(False)
+            self.time_label_player.setText("File missing")
+            return
+
+        stored_path = row["stored_path"]
+        if not Path(stored_path).exists():
+            self.play_pause_btn.setEnabled(False)
+            self.position_slider.setEnabled(False)
+            self.time_label_player.setText("File missing")
+            return
+
+        # Stop current playback and load new source
+        self.audio_player.stop()
+        self.audio_player.setSource(QUrl.fromLocalFile(stored_path))
+        self.play_pause_btn.setEnabled(True)
+        self.position_slider.setEnabled(True)
+        self.position_slider.setValue(0)
+        self.time_label_player.setText("00:00 / 00:00")
+
+    def _toggle_audio_playback(self) -> None:
+        if self.audio_player.playbackState() == QMediaPlayer.PlaybackState.PlayingState:
+            self.audio_player.pause()
+        else:
+            self.audio_player.play()
+
+    def _seek_audio(self, position: int) -> None:
+        duration = self.audio_player.duration()
+        if duration > 0:
+            self.audio_player.setPosition(int(position / 1000.0 * duration))
+
+    def _update_position(self, position: int) -> None:
+        if not self.position_slider.isSliderDown():
+            duration = self.audio_player.duration()
+            if duration > 0:
+                self.position_slider.setValue(int(position / duration * 1000))
+        # Update time label
+        pos_secs = position // 1000
+        dur_secs = self.audio_player.duration() // 1000
+        pos_str = f"{pos_secs//60:02d}:{pos_secs%60:02d}"
+        dur_str = f"{dur_secs//60:02d}:{dur_secs%60:02d}"
+        self.time_label_player.setText(f"{pos_str} / {dur_str}")
+
+    def _update_duration(self, duration: int) -> None:
+        if duration > 0:
+            dur_secs = duration // 1000
+            dur_str = f"{dur_secs//60:02d}:{dur_secs%60:02d}"
+            pos_secs = self.audio_player.position() // 1000
+            pos_str = f"{pos_secs//60:02d}:{pos_secs%60:02d}"
+            self.time_label_player.setText(f"{pos_str} / {dur_str}")
+
+    def _update_play_button(self, state: QMediaPlayer.PlaybackState) -> None:
+        if state == QMediaPlayer.PlaybackState.PlayingState:
+            self.play_pause_btn.setText("⏸")
+        else:
+            self.play_pause_btn.setText("▶")
+
+    def _handle_player_error(
+        self, error: QMediaPlayer.Error, error_string: str
+    ) -> None:
+        if error != QMediaPlayer.Error.NoError:
+            self.play_pause_btn.setEnabled(False)
+            self.position_slider.setEnabled(False)
+            self.time_label_player.setText("Error")
+            QMessageBox.warning(self, "Media Player Error", error_string)
 
     def _refresh_documents_table(self) -> None:
         documents = self.database.list_documents()
@@ -2026,6 +3002,10 @@ class MainWindow(QMainWindow):
 
         self.notes_output.setMarkdown(text if text else "No notes generated yet.")
 
+    def _set_quiz_markdown(self, content: str) -> None:
+        # Backwards-compatible name: the quiz is now rendered interactively.
+        self._set_quiz_content(content)
+
     def _load_latest_note(self) -> None:
         audio_id = self._combo_audio_id(self.notes_audio_combo)
         if audio_id is None:
@@ -2038,12 +3018,22 @@ class MainWindow(QMainWindow):
             str(note.get("content", "")) if note else "No notes generated yet."
         )
 
+    def _load_latest_quiz(self) -> None:
+        audio_id = self._combo_audio_id(self.quiz_audio_combo)
+        if audio_id is None:
+            self._render_quiz([])
+            return
+
+        quiz = self.database.get_latest_quiz(audio_id=audio_id)
+        self._set_quiz_content(str(quiz.get("content", "")) if quiz else "")
+
     def _refresh_audio_combos(self) -> None:
         audios = self.database.list_audios()
 
         prev_ids = {
             "selector": self._combo_audio_id(self.audio_selector_combo),
             "notes": self._combo_audio_id(self.notes_audio_combo),
+            "quiz": self._combo_audio_id(self.quiz_audio_combo),
             "doc_link": self._combo_audio_id(self.document_audio_link_combo),
             "chat": self._combo_audio_id(self.chat_audio_combo),
         }
@@ -2051,6 +3041,7 @@ class MainWindow(QMainWindow):
         combos = [
             self.audio_selector_combo,
             self.notes_audio_combo,
+            self.quiz_audio_combo,
             self.document_audio_link_combo,
             self.chat_audio_combo,
         ]
@@ -2071,7 +3062,7 @@ class MainWindow(QMainWindow):
         for c in combos:
             c.blockSignals(False)
 
-        keys = ["selector", "notes", "doc_link", "chat"]
+        keys = ["selector", "notes", "quiz", "doc_link", "chat"]
         for c, k in zip(combos, keys):
             self._restore_combo_selection(c, prev_ids[k])
 
@@ -2080,6 +3071,7 @@ class MainWindow(QMainWindow):
         self._load_selected_transcript()
         self._refresh_documents_table()
         self._load_latest_note()
+        self._load_latest_quiz()
 
     def _restore_combo_selection(self, combo: QComboBox, value: int | None) -> None:
         if combo.count() == 0:
@@ -2105,7 +3097,16 @@ class MainWindow(QMainWindow):
             self._spinner_timer.stop()
         if self._time_update_timer and self._time_update_timer.isActive():
             self._time_update_timer.stop()
+        # Stop media player
+        if self.audio_player:
+            self.audio_player.stop()
         for thread, _ in list(self._active_workers):
             thread.quit()
             thread.wait(2000)
+        if (
+            self.recorder
+            and self.recorder.recorderState()
+            == QMediaRecorder.RecorderState.RecordingState
+        ):
+            self.recorder.stop()
         super().closeEvent(event)

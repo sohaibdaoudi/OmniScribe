@@ -10,6 +10,7 @@ from app.services.api_status_service import ApiStatusService
 from app.services.document_service import DocumentService
 from app.services.groq_client import GroqClient
 from app.services.notes_service import NotesService
+from app.services.quiz_service import QuizService
 from app.services.rag_service import RagService
 from app.services.transcription_service import TranscriptionService
 from app.ui.main_window import MainWindow
@@ -27,17 +28,21 @@ def build_main_window() -> MainWindow:
         chat_model=settings.chat_model,
     )
 
+    rag_service = RagService(database=database, groq_client=groq_client)
+
     transcription_service = TranscriptionService(
         database=database,
         groq_client=groq_client,
         audio_storage_dir=settings.audio_dir,
+        rag_service=rag_service,
     )
     document_service = DocumentService(
         database=database,
         document_storage_dir=settings.documents_dir,
+        rag_service=rag_service,
     )
     notes_service = NotesService(database=database, groq_client=groq_client)
-    rag_service = RagService(database=database, groq_client=groq_client)
+    quiz_service = QuizService(database=database, groq_client=groq_client)
     api_status_service = ApiStatusService(groq_client=groq_client)
 
     return MainWindow(
@@ -45,6 +50,7 @@ def build_main_window() -> MainWindow:
         transcription_service=transcription_service,
         document_service=document_service,
         notes_service=notes_service,
+        quiz_service=quiz_service,
         rag_service=rag_service,
         api_status_service=api_status_service,
     )

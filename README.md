@@ -4,24 +4,28 @@ OmniScribe is a desktop app for converting lecture audio and supporting document
 
 ## Recent Updates
 
+- **In-app microphone recording**: New "Record" sub-tab lets you record audio directly from any available input device, with a live timer and device selector.
 - Dynamic API health status in the sidebar (startup check + periodic checks).
 - Attachment chips for audio/doc selections with remove actions.
 - Audio attachment replacement confirmation and document selection deduplication.
-- Determinate progress bar flow from 0% to 100% during audio processing.
+- Staged progress indicator (spinner + stage label + elapsed time) during audio processing.
 - Notes are rendered as Markdown (instead of raw Markdown text output).
 - Chat source labels shown as separated chips and deduplicated.
 - Improved RAG retrieval with better chunking, source diversity, and document weighting.
+- Audio playback in the Transcripts view with a seek slider and time display.
 
 ## Current Capabilities
 
 1. Upload one audio file and optional supporting documents in a single pipeline.
-2. Transcribe audio with Groq Whisper and save both raw and corrected transcript versions.
-3. Upload standalone documents and optionally link them to a selected audio session.
-4. Generate notes from corrected transcripts in two modes:
-  - Exact teacher wording
-  - Reformulated student-friendly wording
-5. Ask questions in AI Chat using RAG over corrected transcripts and extracted document text.
-6. View API readiness status in-app (ready/loading/error).
+2. **Record audio directly in-app** using any available microphone, then transcribe with one click.
+3. Transcribe audio with Groq Whisper and save both raw and corrected transcript versions.
+4. Upload standalone documents and optionally link them to a selected audio session.
+5. Generate notes from corrected transcripts in two modes:
+   - Exact teacher wording
+   - Reformulated student-friendly wording
+6. Ask questions in AI Chat using RAG over corrected transcripts and extracted document text.
+7. Play back any recorded or uploaded audio directly in the Transcripts view.
+8. View API readiness status in-app (ready/loading/error).
 
 ## Tech Stack
 
@@ -32,26 +36,35 @@ OmniScribe is a desktop app for converting lecture audio and supporting document
 
 ## Project Structure
 
-- app/main.py: application bootstrap and service wiring
-- app/config.py: environment and path configuration
-- app/database.py: SQLite schema and data access methods
-- app/services/groq_client.py: Groq API wrappers (transcription, chat, health check)
-- app/services/api_status_service.py: API availability status mapping for UI
-- app/services/transcription_service.py: audio pipeline and transcript correction
-- app/services/document_service.py: document storage and text extraction (PDF, DOCX, TXT/MD)
-- app/services/notes_service.py: notes generation and persistence
-- app/services/rag_service.py: retrieval and grounded answer generation
-- app/ui/main_window.py: desktop UI
-- app/ui/workers.py: background worker for non-blocking tasks
-- scripts/init_db.sql: SQLite initialization script
-- .env.example: environment variable template
-- run.py: alternate run entrypoint
+- `app/main.py` — application bootstrap and service wiring
+- `app/config.py` — environment and path configuration
+- `app/database.py` — SQLite schema and data access methods
+- `app/services/groq_client.py` — Groq API wrappers (transcription, chat, health check)
+- `app/services/api_status_service.py` — API availability status mapping for UI
+- `app/services/transcription_service.py` — audio pipeline and transcript correction
+- `app/services/document_service.py` — document storage and text extraction (PDF, DOCX, TXT/MD)
+- `app/services/notes_service.py` — notes generation and persistence
+- `app/services/rag_service.py` — retrieval and grounded answer generation
+- `app/ui/main_window.py` — desktop UI
+- `app/ui/workers.py` — background workers for non-blocking tasks
+- `scripts/init_db.sql` — SQLite initialization script
+- `.env.example` — environment variable template
+- `run.py` — alternate run entrypoint
 
 ## Requirements
 
 - Python 3.11+
 - uv installed
 - Groq API key
+
+### OCR Capabilities
+
+OmniScribe can read text from scanned PDFs and images using **EasyOCR**, a Python‑based OCR engine.
+
+- On first use, EasyOCR automatically downloads its recognition models (~500 MB) to `~/.EasyOCR/` – no separate installation required.
+- PDFs are processed using **PyMuPDF** (no need for Poppler).
+- Supported image formats: PNG, JPG, JPEG, BMP, TIFF.
+- Scanned PDFs are automatically detected and fall back to OCR.
 
 ## Setup
 
@@ -67,7 +80,7 @@ uv sync
 cp .env.example .env
 ```
 
-3. Configure required environment variables in .env:
+3. Configure required environment variables in `.env`:
 
 ```env
 GROQ_API_KEY=your_groq_api_key_here
@@ -97,25 +110,37 @@ uv run python -m app.main
 
 ## User Flow
 
-1. Open Audio and select one audio attachment.
-2. Optionally attach supporting documents before transcription.
-3. Click Transcribe and monitor staged progress from 0% to 100%.
-4. Review raw and corrected transcripts in the transcripts view.
-5. Upload additional documents from the Documents page and link to an audio session if needed.
+### Upload flow
+1. Open the **Audio** page and go to the **Upload** sub-tab.
+2. Drop or browse for one audio file and optionally attach supporting documents.
+3. Enter a lecture title, then click **Transcribe** and monitor staged progress.
+4. Review raw and corrected transcripts in the **Transcripts** sub-tab, and play back the audio with the built-in player.
+
+### Record flow
+1. Open the **Audio** page and go to the **Record** sub-tab.
+2. Select your microphone from the device dropdown.
+3. Click **Start Recording**; a live timer shows elapsed time.
+4. Click **Stop Recording**, then click **Transcribe** to process the recording.
+
+### Documents & Notes
+5. Upload additional documents from the **Documents** page and link them to an audio session if needed.
 6. Generate notes in the selected note mode and view rendered Markdown output.
-7. Use AI Chat to ask grounded questions and review source chips for provenance.
+
+### AI Chat
+7. Use **AI Chat** to ask grounded questions and review source chips for provenance.
 
 ## Data Stored
 
 - Audio metadata and stored file path
 - Raw transcript
 - Corrected transcript
-- Uploaded documents and extracted text
+- Uploaded/recorded documents and extracted text
 - Generated notes by mode
 
 ## Implementation Notes
 
 - Long-running operations run in background worker threads to keep the UI responsive.
+- Recording uses `QMediaRecorder` / `QMediaCaptureSession` with WAV output; the resulting file is fed directly into the normal transcription pipeline.
 - API health checks run asynchronously at startup and every 20 seconds.
 - RAG retrieval chunks transcripts/documents and selects diverse context chunks.
 - Chat sources are deduplicated before display.
